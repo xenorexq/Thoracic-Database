@@ -433,7 +433,7 @@ class ThoracicApp:
         """显示关于对话框"""
         about_text = """胸外科科研数据录入系统
 
-版本：v1.04
+版本：v1.1
 
 功能特点：
 • 患者信息管理（肺癌/食管癌）
@@ -444,7 +444,11 @@ class ThoracicApp:
 • 数据导出（Excel/CSV）
 • 数据库导入功能
 
-© 2024 胸外科科研团队"""
+开发者信息：
+GitHub: xenorexq
+邮箱: qinzhi100@gmail.com
+
+© 2025 胸外科科研团队"""
         
         messagebox.showinfo("关于", about_text)
 
