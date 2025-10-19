@@ -107,6 +107,9 @@ thoracic_entry/
 4. 切换到随访页输入随访日期、状态等，保存。
 5. 在导出页导出当前患者为 Excel 和 CSV，检查生成文件内容完整。
 
+双击build_simple.bat build_exe.bat 或者build_exe.bat打包程序
+打包好的程序在dist目录内
+所有代码均由ChatGPT和Manus1.5输出
 ## 许可证
 
 本项目供学习和科研使用，自行承担使用风险。如需在正式项目中使用，请先进行充分测试并遵循相关法规和伦理要求。
