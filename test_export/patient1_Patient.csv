@@ -1,2 +1,0 @@
-hospital_id,cancer_type,sex,birth_ym4,pack_years,multi_primary,lung_t,lung_n,lung_m,eso_t,eso_n,eso_m,eso_histology,eso_grade,eso_location,nac_chemo,nac_chemo_cycles,nac_immuno,nac_immuno_cycles,nac_targeted,nac_targeted_cycles,nac_radiation,adj_chemo,adj_chemo_cycles,adj_immuno,adj_immuno_cycles,adj_targeted,adj_targeted_cycles,adj_radiation,notes_patient,eso_from_incisors_cm,family_history,lung_stage,eso_stage
-H1,肺癌,男,202207,,,1a,0,0,,,,,,,,,,,,,1,,,,,,,0,,,0,I,

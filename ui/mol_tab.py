@@ -170,8 +170,9 @@ class MolecularTab(ttk.Frame):
             self.tree.selection_set(first)
             try:
                 self.load_record(int(first))
-            except Exception:
-                pass
+            except Exception as e:
+                # 记录错误但不阻断程序运行
+                print(f"Warning: Failed to load molecular record: {e}")
 
     def _on_right_click(self, event) -> None:
         """右键点击树形列表时弹出删除菜单。"""

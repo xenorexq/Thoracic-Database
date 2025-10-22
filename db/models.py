@@ -66,6 +66,8 @@ class Database:
                 eso_histology TEXT,
                 eso_grade TEXT,
                 eso_location TEXT,
+                eso_from_incisors_cm REAL,
+                family_history INTEGER DEFAULT 0,
                 nac_chemo INTEGER,
                 nac_chemo_cycles INTEGER,
                 nac_immuno INTEGER,
@@ -111,6 +113,8 @@ class Database:
                 approach TEXT,
                 scope_lung TEXT,
                 lobe TEXT,
+                left_side INTEGER DEFAULT 0,
+                right_side INTEGER DEFAULT 0,
                 bilateral INTEGER,
                 lesion_count INTEGER,
                 main_lesion_size_cm REAL,
@@ -142,6 +146,8 @@ class Database:
                 lvi INTEGER,
                 pni INTEGER,
                 pleural_invasion INTEGER,
+                airway_spread INTEGER,
+                pathology_no TEXT,
                 ln_total INTEGER,
                 ln_positive INTEGER,
                 trg INTEGER,
@@ -170,6 +176,10 @@ class Database:
                 pdl1_percent REAL,
                 tmb_msi TEXT,
                 test_date TEXT,
+                genes_tested TEXT,
+                result_summary TEXT,
+                ctc_count INTEGER,
+                methylation_result TEXT,
                 notes_mol TEXT,
                 FOREIGN KEY (patient_id) REFERENCES Patient(patient_id) ON DELETE CASCADE
             );
@@ -419,6 +429,10 @@ class Database:
     # ------------------ General operations ------------------
     def export_table(self, table_name: str) -> List[sqlite3.Row]:
         """Return all rows for the given table for export purposes."""
+        # 白名单验证表名，防止SQL注入
+        allowed_tables = ['Patient', 'Surgery', 'Pathology', 'Molecular', 'FollowUp']
+        if table_name not in allowed_tables:
+            raise ValueError(f"Invalid table name: {table_name}")
         cur = self.conn.execute(f"SELECT * FROM {table_name}")
         return cur.fetchall()
 

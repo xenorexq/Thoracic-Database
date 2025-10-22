@@ -63,6 +63,12 @@ def migrate_database(db_path):
     if add_column_if_not_exists(conn, "Molecular", "methylation_result", "TEXT"):
         changes_made = True
     
+    # Surgery表新增字段: 左右打勾框
+    if add_column_if_not_exists(conn, "Surgery", "left_side", "INTEGER", default=0):
+        changes_made = True
+    if add_column_if_not_exists(conn, "Surgery", "right_side", "INTEGER", default=0):
+        changes_made = True
+    
     conn.close()
     
     if changes_made:

@@ -130,8 +130,13 @@ class SurgeryTab(ttk.Frame):
             width=8,
         )
         self.lobe_cb.grid(row=0, column=5)
+        # 添加左和右打勾框
+        self.left_var = tk.IntVar()
+        ttk.Checkbutton(self.lung_frame, text="左", variable=self.left_var).grid(row=0, column=6)
+        self.right_var = tk.IntVar()
+        ttk.Checkbutton(self.lung_frame, text="右", variable=self.right_var).grid(row=0, column=7)
         self.bilateral_var = tk.IntVar()
-        ttk.Checkbutton(self.lung_frame, text="双侧", variable=self.bilateral_var).grid(row=0, column=6)
+        ttk.Checkbutton(self.lung_frame, text="双侧", variable=self.bilateral_var).grid(row=0, column=8)
         ttk.Label(self.lung_frame, text="病灶数").grid(row=1, column=0)
         self.lesion_count_var = tk.StringVar()
         self.lesion_count_entry = ttk.Entry(self.lung_frame, textvariable=self.lesion_count_var, width=5)
@@ -214,8 +219,9 @@ class SurgeryTab(ttk.Frame):
             self.tree.selection_set(first)
             try:
                 self.load_record(int(first))
-            except Exception:
-                pass
+            except Exception as e:
+                # 记录错误但不阻断程序运行
+                print(f"Warning: Failed to load surgery record: {e}")
 
     def _on_tree_select(self, event) -> None:
         sel = self.tree.selection()
@@ -254,6 +260,8 @@ class SurgeryTab(ttk.Frame):
         self.approach_var.set(row.get("approach") or "")
         self.scope_var.set(row.get("scope_lung") or "")
         self.lobe_var.set(row.get("lobe") or "")
+        self.left_var.set(row.get("left_side") or 0)
+        self.right_var.set(row.get("right_side") or 0)
         self.bilateral_var.set(row.get("bilateral") or 0)
         self.lesion_count_var.set(str(row.get("lesion_count") or ""))
         self.main_size_var.set(str(row.get("main_lesion_size_cm") or ""))
@@ -275,6 +283,8 @@ class SurgeryTab(ttk.Frame):
         self.approach_var.set("")
         self.scope_var.set("")
         self.lobe_var.set("")
+        self.left_var.set(0)
+        self.right_var.set(0)
         self.bilateral_var.set(0)
         self.lesion_count_var.set("")
         self.main_size_var.set("")
@@ -315,6 +325,8 @@ class SurgeryTab(ttk.Frame):
             "approach": self.approach_var.get() or None,
             "scope_lung": self.scope_var.get() or None,
             "lobe": self.lobe_var.get() or None,
+            "left_side": self.left_var.get(),
+            "right_side": self.right_var.get(),
             "bilateral": self.bilateral_var.get(),
             "lesion_count": int(self.lesion_count_var.get()) if self.lesion_count_var.get() else None,
             "main_lesion_size_cm": float(self.main_size_var.get()) if self.main_size_var.get() else None,

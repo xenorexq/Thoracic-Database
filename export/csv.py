@@ -78,7 +78,7 @@ def _format_value(col: str, val: object) -> object:
     return val
 
 def _format_row_dates(row_dict: dict) -> dict:
-    """格式化行中的日期字段。"""
+    """Apply date formatting to all columns in a row."""
     new_row = {}
     for k, v in row_dict.items():
         if k in EXCLUDE_FIELDS:
@@ -88,25 +88,14 @@ def _format_row_dates(row_dict: dict) -> dict:
 
 # 移除 `_annotate_stage` 函数。临床分期映射功能已取消，不再补充分期字段。
 
-
 def _clean_row(row_dict: dict) -> dict:
-    """Remove unwanted fields from a row dictionary before export.
-
-    在清理字段的同时，统一格式化日期字段。
-    """
-    # 先格式化日期
+    """Remove unwanted fields and format date values before export."""
     formatted = _format_row_dates(row_dict)
-    # 再删除排除字段
     return {k: v for k, v in formatted.items() if k not in EXCLUDE_FIELDS}
 
 
 def _reorder_pathology(row_dict: dict) -> dict:
-    """Reorder pathology row so that airway_spread appears before pleural_invasion.
-
-    When exporting Pathology data, the airway_spread column should precede
-    pleural_invasion.  This helper takes a cleaned row dictionary and
-    inserts the airway_spread key before pleural_invasion if both are present.
-    """
+    """Reorder pathology row so that airway_spread appears before pleural_invasion."""
     if "airway_spread" in row_dict and "pleural_invasion" in row_dict:
         airway_val = row_dict.pop("airway_spread")
         new_dict = {}
@@ -119,88 +108,114 @@ def _reorder_pathology(row_dict: dict) -> dict:
 
 
 def _write_csv(path: Path, rows: Iterable[dict], table_name: str) -> None:
-    """Write a list of dictionaries to a CSV file after cleaning and formatting.
-
-    The ``table_name`` determines whether additional reordering is applied.
-    """
-    # Convert to list and remove excluded fields while formatting dates
-    rows_list = []
-    for row in rows:
-        row_dict = dict(row) if not isinstance(row, dict) else row
-        cleaned = _clean_row(row_dict)
-        if table_name == "Pathology":
-            cleaned = _reorder_pathology(cleaned)
-        rows_list.append(cleaned)
-    if not rows_list:
-        # Nothing to write
+    """Write a list of dictionaries to a CSV file after cleaning and formatting."""
+    try:
+        # Convert to list and remove excluded fields while formatting dates
+        rows_list = []
+        for row in rows:
+            try:
+                row_dict = dict(row) if not isinstance(row, dict) else row
+                cleaned = _clean_row(row_dict)
+                if table_name == "Pathology":
+                    cleaned = _reorder_pathology(cleaned)
+                rows_list.append(cleaned)
+            except Exception as e:
+                print(f"Warning: Failed to process row in {table_name}: {e}")
+                continue
+        
+        if not rows_list:
+            # Nothing to write
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", newline="", encoding="utf-8") as f:
+                pass
+            return
+        
+        # 确保目录存在
+        path.parent.mkdir(parents=True, exist_ok=True)
+        
         with path.open("w", newline="", encoding="utf-8") as f:
-            pass
-        return
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows_list[0].keys()))
-        writer.writeheader()
-        for row in rows_list:
-            writer.writerow(row)
+            writer = csv.DictWriter(f, fieldnames=list(rows_list[0].keys()))
+            writer.writeheader()
+            for row in rows_list:
+                writer.writerow(row)
+    except PermissionError as e:
+        raise PermissionError(f"无法写入文件 {path}，请检查文件权限或文件是否被占用") from e
+    except Exception as e:
+        raise Exception(f"导出CSV文件失败: {str(e)}") from e
 
 
-def export_patient_to_csv(db: Database, patient_id: int, dir_path: Path) -> List[Path]:
-    """Export a single patient to CSV files.
+def export_patient_to_csv(db: Database, patient_id: int, dir_path: Path, prefix: str = None) -> List[Path]:
+    """Export data for a single patient to CSV files (one file per table).
 
-    Returns list of file paths created.
+    Args:
+        db: Database instance.
+        patient_id: Primary key of the patient to export.
+        dir_path: Directory where CSV files will be written.
+        prefix: Optional prefix for file names (e.g. ``patient123``).
+
+    Returns:
+        List of file paths created.
     """
-    files: List[Path] = []
-    # Create directory if not exists
-    dir_path.mkdir(parents=True, exist_ok=True)
-    # Determine prefix for file names
-    prefix = f"patient{patient_id}"
-    # Prepare per-table rows
-    tables = ["Patient", "Surgery", "Pathology", "Molecular", "FollowUp"]
-    # Fetch patient once to retrieve hospital_id
-    patient_row = db.get_patient_by_id(patient_id)
-    hospital_id = None
-    patient_dict_list: List[dict] = []
-    if patient_row:
-        # Convert to dict so we can add to export
+    try:
+        files: List[Path] = []
+        dir_path.mkdir(parents=True, exist_ok=True)
+        
+        if prefix is None:
+            prefix = f"patient{patient_id}"
+        
+        tables = ["Patient", "Surgery", "Pathology", "Molecular", "FollowUp"]
+        patient_row = db.get_patient_by_id(patient_id)
+        
+        if not patient_row:
+            raise ValueError(f"Patient with ID {patient_id} not found")
+        
+        patient_dict_list: List[dict] = []
+        hospital_id = None
+        
         pr_dict = dict(patient_row)
-        # 不再补充分期字段。直接使用患者行内容
+        # 不再补充分期字段，直接使用患者行内容
         patient_dict_list = [pr_dict]
         hospital_id = pr_dict.get("hospital_id")
-    for table in tables:
-        rows: List[dict]
-        if table == "Patient":
-            rows = patient_dict_list
-        elif table == "FollowUp":
-            row = db.get_followup(patient_id)
-            # If follow-up exists, attach hospital_id
-            if row:
-                rdict = dict(row)
-                if hospital_id is not None:
-                    # Prepend hospital_id for identification
-                    rdict = {"hospital_id": hospital_id, **rdict}
-                rows = [rdict]
-            else:
-                rows = []
-        else:
-            if table == "Surgery":
-                items = db.get_surgeries_by_patient(patient_id)
-            elif table == "Pathology":
-                items = db.get_pathologies_by_patient(patient_id)
-            elif table == "Molecular":
-                items = db.get_molecular_by_patient(patient_id)
-            else:
-                items = []
-            rows = []
-            for row in items:
-                rdict = dict(row)
-                if hospital_id is not None:
-                    # Add hospital_id to each row for unique identification
-                    rdict = {"hospital_id": hospital_id, **rdict}
-                rows.append(rdict)
-        file_path = dir_path / f"{prefix}_{table}.csv"
-        # Clean and write rows to CSV
-        _write_csv(file_path, rows, table)
-        files.append(file_path)
-    return files
+        
+        for table in tables:
+            try:
+                if table == "Patient":
+                    rows = patient_dict_list
+                elif table == "FollowUp":
+                    row = db.get_followup(patient_id)
+                    if row:
+                        rdict = dict(row)
+                        if hospital_id is not None:
+                            rdict = {"hospital_id": hospital_id, **rdict}
+                        rows = [rdict]
+                    else:
+                        rows = []
+                else:
+                    if table == "Surgery":
+                        items = db.get_surgeries_by_patient(patient_id)
+                    elif table == "Pathology":
+                        items = db.get_pathologies_by_patient(patient_id)
+                    elif table == "Molecular":
+                        items = db.get_molecular_by_patient(patient_id)
+                    else:
+                        items = []
+                    rows = []
+                    for row in items:
+                        rdict = dict(row)
+                        if hospital_id is not None:
+                            rdict = {"hospital_id": hospital_id, **rdict}
+                        rows.append(rdict)
+                
+                file_path = dir_path / f"{prefix}_{table}.csv"
+                _write_csv(file_path, rows, table)
+                files.append(file_path)
+            except Exception as e:
+                print(f"Warning: Failed to export table {table}: {e}")
+                continue
+        
+        return files
+    except Exception as e:
+        raise Exception(f"导出患者CSV文件失败: {str(e)}") from e
 
 
 def export_all_to_csv(db: Database, dir_path: Path) -> List[Path]:
@@ -208,27 +223,37 @@ def export_all_to_csv(db: Database, dir_path: Path) -> List[Path]:
 
     Returns list of file paths created.
     """
-    files: List[Path] = []
-    dir_path.mkdir(parents=True, exist_ok=True)
-    # Precompute mapping from patient_id to hospital_id for adding to other tables
-    patient_rows = db.export_table("Patient")
-    pat_map = {}
-    for row in patient_rows:
-        row_dict = dict(row)
-        pat_map[row_dict.get("patient_id")] = row_dict.get("hospital_id")
-    for table in ["Patient", "Surgery", "Pathology", "Molecular", "FollowUp"]:
-        rows = db.export_table(table)
-        rows_dicts: List[dict] = []
-        for row in rows:
-            rdict = dict(row)
-            if table != "Patient":
-                # For non-Patient tables, add hospital_id for unique identification
-                pid = rdict.get("patient_id")
-                if pid in pat_map:
-                    rdict = {"hospital_id": pat_map[pid], **rdict}
-            rows_dicts.append(rdict)
-        file_path = dir_path / f"{table}.csv"
-        # Clean and write rows to CSV
-        _write_csv(file_path, rows_dicts, table)
-        files.append(file_path)
-    return files
+    try:
+        files: List[Path] = []
+        dir_path.mkdir(parents=True, exist_ok=True)
+        
+        # Precompute mapping from patient_id to hospital_id for adding to other tables
+        patient_rows = db.export_table("Patient")
+        pat_map = {}
+        for row in patient_rows:
+            row_dict = dict(row)
+            pat_map[row_dict.get("patient_id")] = row_dict.get("hospital_id")
+        
+        for table in ["Patient", "Surgery", "Pathology", "Molecular", "FollowUp"]:
+            try:
+                rows = db.export_table(table)
+                rows_dicts: List[dict] = []
+                for row in rows:
+                    rdict = dict(row)
+                    if table != "Patient":
+                        pid = rdict.get("patient_id")
+                        if pid in pat_map:
+                            rdict = {"hospital_id": pat_map[pid], **rdict}
+                    rows_dicts.append(rdict)
+                
+                file_path = dir_path / f"{table}.csv"
+                _write_csv(file_path, rows_dicts, table)
+                files.append(file_path)
+            except Exception as e:
+                print(f"Warning: Failed to export table {table}: {e}")
+                continue
+        
+        return files
+    except Exception as e:
+        raise Exception(f"导出CSV文件失败: {str(e)}") from e
+

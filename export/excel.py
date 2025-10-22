@@ -51,10 +51,6 @@ def _format_value(col: str, val: object) -> object:
             return formatted.replace("-", "") if formatted else s
         return s
     if col in DATE_FIELDS_8:
-        if len(s) == 8 and s.isdigit():
-            return s
-        if "-" in s:
-            return s.replace("-", "")
         if len(s) == 6 and s.isdigit():
             formatted = format_date6(s)
             return formatted.replace("-", "") if formatted else s
@@ -100,99 +96,143 @@ def _reorder_pathology(row_dict: dict) -> dict:
 
 
 def _write_sheet(wb: Workbook, sheet_name: str, rows: Iterable[dict]) -> None:
-    ws = wb.create_sheet(title=sheet_name)
-    # Convert to list, remove excluded fields and format dates
-    rows_list = []
-    for row in rows:
-        row_dict = dict(row) if not isinstance(row, dict) else row
-        cleaned = _clean_row(row_dict)
-        # For Pathology sheet reorder airway_spread before pleural_invasion
-        if sheet_name == "Pathology":
-            cleaned = _reorder_pathology(cleaned)
-        rows_list.append(cleaned)
-    if not rows_list:
-        return
-    # Write header based on cleaned row keys (order matters)
-    header = list(rows_list[0].keys())
-    ws.append(header)
-    for row in rows_list:
-        ws.append([row.get(col) for col in header])
+    """写入工作表数据，包含异常处理。"""
+    try:
+        ws = wb.create_sheet(title=sheet_name)
+        # Convert to list, remove excluded fields and format dates
+        rows_list = []
+        for row in rows:
+            try:
+                row_dict = dict(row) if not isinstance(row, dict) else row
+                cleaned = _clean_row(row_dict)
+                # For Pathology sheet reorder airway_spread before pleural_invasion
+                if sheet_name == "Pathology":
+                    cleaned = _reorder_pathology(cleaned)
+                rows_list.append(cleaned)
+            except Exception as e:
+                print(f"Warning: Failed to process row in {sheet_name}: {e}")
+                continue
+        
+        if not rows_list:
+            return
+        
+        # Write header based on cleaned row keys (order matters)
+        header = list(rows_list[0].keys())
+        ws.append(header)
+        for row in rows_list:
+            ws.append([row.get(col) for col in header])
+    except Exception as e:
+        print(f"Error: Failed to write sheet {sheet_name}: {e}")
+        raise
 
 
 def export_patient_to_excel(db: Database, patient_id: int, file_path: Path) -> None:
     """Export data for a single patient to an Excel file."""
-    wb = Workbook()
-    # Remove the default sheet created by openpyxl
-    wb.remove(wb.active)
-    # Fetch rows per table
-    tables = ["Patient", "Surgery", "Pathology", "Molecular", "FollowUp"]
-    # Fetch the patient once to obtain hospital_id.  Convert sqlite3.Row to dict
-    patient_row = db.get_patient_by_id(patient_id)
-    # patient_dict_list is a list of dicts to feed into sheet writer
-    patient_dict_list: List[dict] = []
-    # Determine hospital_id from the converted dict
-    hospital_id = None
-    if patient_row:
+    try:
+        wb = Workbook()
+        # Remove the default sheet created by openpyxl
+        wb.remove(wb.active)
+        # Fetch rows per table
+        tables = ["Patient", "Surgery", "Pathology", "Molecular", "FollowUp"]
+        # Fetch the patient once to obtain hospital_id.  Convert sqlite3.Row to dict
+        patient_row = db.get_patient_by_id(patient_id)
+        
+        if not patient_row:
+            raise ValueError(f"Patient with ID {patient_id} not found")
+        
+        # patient_dict_list is a list of dicts to feed into sheet writer
+        patient_dict_list: List[dict] = []
+        # Determine hospital_id from the converted dict
+        hospital_id = None
+        
         pr_dict = dict(patient_row)
         # 不再补充分期字段，直接使用患者行内容
         patient_dict_list = [pr_dict]
         hospital_id = pr_dict.get("hospital_id")
-    for table in tables:
-        if table == "Patient":
-            rows = patient_dict_list
-        elif table == "FollowUp":
-            row = db.get_followup(patient_id)
-            if row:
-                rdict = dict(row)
-                if hospital_id is not None:
-                    rdict = {"hospital_id": hospital_id, **rdict}
-                rows = [rdict]
-            else:
-                rows = []
-        else:
-            # Many-to-one tables
-            if table == "Surgery":
-                items = db.get_surgeries_by_patient(patient_id)
-            elif table == "Pathology":
-                items = db.get_pathologies_by_patient(patient_id)
-            elif table == "Molecular":
-                items = db.get_molecular_by_patient(patient_id)
-            else:
-                items = []
-            rows = []
-            for row in items:
-                rdict = dict(row)
-                if hospital_id is not None:
-                    rdict = {"hospital_id": hospital_id, **rdict}
-                rows.append(rdict)
-        _write_sheet(wb, table, rows)
-    wb.save(file_path)
+        
+        for table in tables:
+            try:
+                if table == "Patient":
+                    rows = patient_dict_list
+                elif table == "FollowUp":
+                    row = db.get_followup(patient_id)
+                    if row:
+                        rdict = dict(row)
+                        if hospital_id is not None:
+                            rdict = {"hospital_id": hospital_id, **rdict}
+                        rows = [rdict]
+                    else:
+                        rows = []
+                else:
+                    # Many-to-one tables
+                    if table == "Surgery":
+                        items = db.get_surgeries_by_patient(patient_id)
+                    elif table == "Pathology":
+                        items = db.get_pathologies_by_patient(patient_id)
+                    elif table == "Molecular":
+                        items = db.get_molecular_by_patient(patient_id)
+                    else:
+                        items = []
+                    rows = []
+                    for row in items:
+                        rdict = dict(row)
+                        if hospital_id is not None:
+                            rdict = {"hospital_id": hospital_id, **rdict}
+                        rows.append(rdict)
+                _write_sheet(wb, table, rows)
+            except Exception as e:
+                print(f"Warning: Failed to export table {table}: {e}")
+                continue
+        
+        # 确保目标目录存在
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(file_path)
+        
+    except PermissionError as e:
+        raise PermissionError(f"无法写入文件 {file_path}，请检查文件权限或文件是否被占用") from e
+    except Exception as e:
+        raise Exception(f"导出Excel文件失败: {str(e)}") from e
 
 
 def export_all_to_excel(db: Database, file_path: Path) -> None:
     """Export entire database to an Excel file (one sheet per table)."""
-    wb = Workbook()
-    # Remove default sheet
-    wb.remove(wb.active)
-    # Precompute mapping from patient_id to hospital_id
-    patient_rows = db.export_table("Patient")
-    pat_map = {}
-    for row in patient_rows:
-        rdict = dict(row)
-        pat_map[rdict.get("patient_id")] = rdict.get("hospital_id")
-    # For each table, fetch all rows and attach hospital_id for non-Patient tables
-    for table in ["Patient", "Surgery", "Pathology", "Molecular", "FollowUp"]:
-        rows = db.export_table(table)
-        rows_dicts: List[dict] = []
-        for row in rows:
+    try:
+        wb = Workbook()
+        # Remove default sheet
+        wb.remove(wb.active)
+        # Precompute mapping from patient_id to hospital_id
+        patient_rows = db.export_table("Patient")
+        pat_map = {}
+        for row in patient_rows:
             rdict = dict(row)
-            if table == "Patient":
-                # 不再补充分期字段。患者行直接使用原字段
-                pass
-            else:
-                pid = rdict.get("patient_id")
-                if pid in pat_map:
-                    rdict = {"hospital_id": pat_map[pid], **rdict}
-            rows_dicts.append(rdict)
-        _write_sheet(wb, table, rows_dicts)
-    wb.save(file_path)
+            pat_map[rdict.get("patient_id")] = rdict.get("hospital_id")
+        
+        # For each table, fetch all rows and attach hospital_id for non-Patient tables
+        for table in ["Patient", "Surgery", "Pathology", "Molecular", "FollowUp"]:
+            try:
+                rows = db.export_table(table)
+                rows_dicts: List[dict] = []
+                for row in rows:
+                    rdict = dict(row)
+                    if table == "Patient":
+                        # 不再补充分期字段。患者行直接使用原字段
+                        pass
+                    else:
+                        pid = rdict.get("patient_id")
+                        if pid in pat_map:
+                            rdict = {"hospital_id": pat_map[pid], **rdict}
+                    rows_dicts.append(rdict)
+                _write_sheet(wb, table, rows_dicts)
+            except Exception as e:
+                print(f"Warning: Failed to export table {table}: {e}")
+                continue
+        
+        # 确保目标目录存在
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(file_path)
+        
+    except PermissionError as e:
+        raise PermissionError(f"无法写入文件 {file_path}，请检查文件权限或文件是否被占用") from e
+    except Exception as e:
+        raise Exception(f"导出Excel文件失败: {str(e)}") from e
+

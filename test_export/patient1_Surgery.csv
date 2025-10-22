@@ -1,2 +1,0 @@
-hospital_id,surgery_id,cancer_type,surgery_date6,indication,planned,completed,start_hhmm,end_hhmm,duration_min,ln_dissection,r0,approach,scope_lung,lobe,bilateral,lesion_count,main_lesion_size_cm,esophagus_site,notes_surgery
-H1,1,肺癌,20241015,原发治疗,1,1,900,1030,90,1,1,,,,,,,,
