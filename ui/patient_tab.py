@@ -5,12 +5,13 @@
 
 from __future__ import annotations
 
+import re
 import tkinter as tk
 from tkinter import ttk, messagebox
 from typing import Optional, Dict
 
 from db.models import Database
-from utils.validators import validate_birth_ym6, format_birth_ym6
+from utils.validators import validate_birth_ym6, format_birth_ym6, validate_date6
 # 已弃用 TNM 分期映射功能，不再导入 get_lung_stage/get_eso_stage
 from tkhtmlview import HTMLScrolledText
 
@@ -32,6 +33,13 @@ class PatientTab(ttk.Frame):
         self.context_menu.add_command(label="删除当前患者", command=self._confirm_delete_patient)
         # 绑定鼠标右键事件。使用 bind_all 可确保在该页任何子控件上右键点击时触发。
         self.bind_all("<Button-3>", self._show_context_menu, add="+")
+
+    @staticmethod
+    def _render_markdown(content: str) -> str:
+        """将嵌入的 Markdown 简单转换为 HTML，当前主要处理粗体标记。"""
+        if not content:
+            return ""
+        return re.sub(r"\*\*(.+?)\*\*", r"<strong>\\1</strong>", content)
 
     def _build_widgets(self) -> None:
         # 创建一个水平分隔窗口，使左侧表单和右侧 AJCC 参考区宽度可调
@@ -125,6 +133,15 @@ class PatientTab(ttk.Frame):
         ttk.Label(general_frame, text="备注:").grid(row=row, column=2, sticky="e", padx=5)
         self.notes_patient_var = tk.StringVar()
         ttk.Entry(general_frame, textvariable=self.notes_patient_var, width=40).grid(row=row, column=3, columnspan=3, sticky="w", padx=5)
+
+        row += 1
+        # 糖尿病史
+        self.diabetes_history_var = tk.IntVar()
+        ttk.Checkbutton(
+            general_frame,
+            variable=self.diabetes_history_var,
+            text="糖尿病史"
+        ).grid(row=row, column=0, columnspan=2, sticky="w", padx=5, pady=3)
 
         # 新增: 家族恶性肿瘤史勾选
         row += 1
@@ -385,7 +402,7 @@ class PatientTab(ttk.Frame):
         else:
             self.birth_display.config(text="")
 
-    def on_cancer_type_change(self, cancer_type: str):
+    def on_cancer_type_change(self, cancer_type: str, notify_app: bool = True):
         """癌种改变时的回调 - 实现互斥禁用"""
         if cancer_type == "肺癌":
             # 启用肺癌字段
@@ -403,7 +420,8 @@ class PatientTab(ttk.Frame):
             self._set_frame_state(self.eso_frame, "normal")
         
         # 通知app
-        self.app.on_cancer_type_change(cancer_type)
+        if notify_app:
+            self.app.on_cancer_type_change(cancer_type)
         
         # 分期计算功能已取消，不更新临床分期
 
@@ -489,6 +507,8 @@ class PatientTab(ttk.Frame):
 </table>
 <p></p>
 <hr />"""
+        # 转换 Markdown 粗体标记为 HTML
+        self.ajcc_lung_content = self._render_markdown(self.ajcc_lung_content)
 
         # AJCC 食管癌与食管胃结合部癌 TNM分期（第八版） – HTML 格式
         self.ajcc_eso_content = """<h1>AJCC 第八版 食管癌与食管胃结合部(EGJ)癌 TNM分期规则</h1>
@@ -554,6 +574,7 @@ class PatientTab(ttk.Frame):
 </table>
 <p></p>
 <hr />"""
+        self.ajcc_eso_content = self._render_markdown(self.ajcc_eso_content)
 
     def update_stage_reference(self) -> None:
         """
@@ -629,6 +650,21 @@ class PatientTab(ttk.Frame):
                 messagebox.showerror("错误", msg)
                 return
 
+        # 验证治疗日期 (可选项，格式需为 yymmdd)
+        nac_date_val = self.nac_date_var.get().strip()
+        if nac_date_val:
+            ok, msg = validate_date6(nac_date_val)
+            if not ok:
+                messagebox.showerror("错误", f"新辅助治疗日期格式错误：{msg}")
+                return
+
+        adj_date_val = self.adj_date_var.get().strip()
+        if adj_date_val:
+            ok, msg = validate_date6(adj_date_val)
+            if not ok:
+                messagebox.showerror("错误", f"辅助治疗日期格式错误：{msg}")
+                return
+
         # 构建数据字典
         data = {
             "hospital_id": hospital_id,
@@ -660,7 +696,7 @@ class PatientTab(ttk.Frame):
             "nac_antiangio": self.nac_antiangio_var.get(),
             "nac_antiangio_cycles": int(self.nac_antiangio_cycles_var.get()) if self.nac_antiangio_cycles_var.get().strip() else None,
             # 新辅助治疗日期
-            "nac_date": self.nac_date_var.get() or None,
+            "nac_date": nac_date_val or None,
             "adj_chemo": self.adj_chemo_var.get(),
             "adj_chemo_cycles": int(self.adj_chemo_cycles_var.get()) if self.adj_chemo_cycles_var.get().strip() else None,
             "adj_immuno": self.adj_immuno_var.get(),
@@ -673,8 +709,10 @@ class PatientTab(ttk.Frame):
             "adj_antiangio": self.adj_antiangio_var.get(),
             "adj_antiangio_cycles": int(self.adj_antiangio_cycles_var.get()) if self.adj_antiangio_cycles_var.get().strip() else None,
             # 辅助治疗日期
-            "adj_date": self.adj_date_var.get() or None,
+            "adj_date": adj_date_val or None,
             "notes_patient": self.notes_patient_var.get() or None,
+            # 糖尿病史
+            "diabetes_history": self.diabetes_history_var.get(),
             # 家族恶性肿瘤史
             "family_history": self.family_history_var.get(),
         }
@@ -708,6 +746,7 @@ class PatientTab(ttk.Frame):
         self.birth_var.set(patient_dict.get("birth_ym4", ""))
         self.pack_years_var.set(patient_dict.get("pack_years", ""))
         self.multi_primary_var.set(patient_dict.get("multi_primary", 0))
+        self.diabetes_history_var.set(patient_dict.get("diabetes_history", 0))
 
         # 家族恶性肿瘤史
         self.family_history_var.set(patient_dict.get("family_history", 0))
@@ -770,6 +809,8 @@ class PatientTab(ttk.Frame):
         self.pack_years_var.set("")
         self.multi_primary_var.set(0)
 
+        # 糖尿病史
+        self.diabetes_history_var.set(0)
         # 家族恶性肿瘤史
         self.family_history_var.set(0)
         
@@ -868,3 +909,8 @@ class PatientTab(ttk.Frame):
             self.app.refresh_patient_list()
         except Exception as e:
             messagebox.showerror("错误", str(e))
+
+
+
+
+

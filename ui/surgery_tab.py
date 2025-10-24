@@ -31,13 +31,15 @@ class SurgeryTab(ttk.Frame):
         # Top list of surgeries
         list_frame = ttk.LabelFrame(self, text="手术列表")
         list_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        # v2.13: 删除surgery_id列，将date移到最左侧
-        columns = ["date", "indication", "duration_min"]
+        # v2.16: 新增序号列，每位患者内独立编号
+        columns = ["seq", "date", "indication", "duration_min"]
         # 限制列表高度为3行，避免占用过多垂直空间
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="browse", height=3)
+        self.tree.heading("seq", text="序号")
         self.tree.heading("date", text="日期")
         self.tree.heading("indication", text="手术适应症")
         self.tree.heading("duration_min", text="时长(分钟)")
+        self.tree.column("seq", width=60, anchor="center")
         self.tree.column("date", width=100, anchor="center")
         self.tree.column("indication", width=150, anchor="w")
         self.tree.column("duration_min", width=100, anchor="center")
@@ -214,11 +216,25 @@ class SurgeryTab(ttk.Frame):
         surgeries = self.db.get_surgeries_by_patient(patient_id)
         # v2.13: 按日期降序排列（最近的在上）
         surgeries_sorted = sorted(surgeries, key=lambda x: dict(x).get("surgery_date6") or "", reverse=True)
-        for s in surgeries_sorted:
+        for seq, s in enumerate(surgeries_sorted, 1):
             s_dict = dict(s)  # 转换为字典
-            date_disp = format_date6(s_dict.get("surgery_date6")) if s_dict.get("surgery_date6") else ""
-            # v2.13: 删除surgery_id列
-            self.tree.insert("", tk.END, iid=s_dict["surgery_id"], values=(date_disp, s_dict.get("indication"), s_dict.get("duration_min")))
+            raw_date = s_dict.get("surgery_date6")
+            date_disp = ""
+            if raw_date:
+                raw_str = str(raw_date)
+                if len(raw_str) == 6 and raw_str.isdigit():
+                    date_disp = format_date6(raw_str)
+                elif len(raw_str) == 8 and raw_str.isdigit():
+                    date_disp = f"{raw_str[:4]}-{raw_str[4:6]}-{raw_str[6:]}"
+                else:
+                    date_disp = raw_str
+            # v2.16: 增加每位患者内的序号列
+            self.tree.insert(
+                "",
+                tk.END,
+                iid=s_dict["surgery_id"],
+                values=(seq, date_disp, s_dict.get("indication"), s_dict.get("duration_min")),
+            )
         # Automatically select and load the first record if available
         children = self.tree.get_children()
         if children:

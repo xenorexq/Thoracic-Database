@@ -27,15 +27,17 @@ class MolecularTab(ttk.Frame):
     def _build_widgets(self) -> None:
         list_frame = ttk.LabelFrame(self, text="分子列表")
         list_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        # v2.13: 删除mol_id列，将test_date移到最左侧
-        columns = ["test_date", "platform", "gene", "variant"]
+        # v2.16: 新增序号列，编号在每位患者内重新计数
+        columns = ["seq", "test_date", "platform", "gene", "variant"]
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="browse")
         # 设置列标题为中文
+        self.tree.heading("seq", text="序号")
         self.tree.heading("test_date", text="检测日期")
         self.tree.heading("platform", text="平台")
         self.tree.heading("gene", text="基因")
         self.tree.heading("variant", text="突变")
         # 设置列宽
+        self.tree.column("seq", width=60, anchor="center")
         self.tree.column("test_date", width=100, anchor="center")
         self.tree.column("platform", width=100, anchor="center")
         self.tree.column("gene", width=120, anchor="center")
@@ -149,19 +151,28 @@ class MolecularTab(ttk.Frame):
         moleculars = self.db.get_molecular_by_patient(patient_id)
         # v2.13: 按日期降序排列（最近的在上）
         moleculars_sorted = sorted(moleculars, key=lambda x: dict(x).get("test_date") or "", reverse=True)
-        for m in moleculars_sorted:
+        for seq, m in enumerate(moleculars_sorted, 1):
             # 将 sqlite3.Row 转换为字典，避免使用 Row 的 .get 方法
             m_dict = dict(m)
             test_date = m_dict.get("test_date")
-            date_disp = format_date6(test_date) if test_date else ""
+            date_disp = ""
+            if test_date:
+                raw_str = str(test_date)
+                if len(raw_str) == 6 and raw_str.isdigit():
+                    date_disp = format_date6(raw_str)
+                elif len(raw_str) == 8 and raw_str.isdigit():
+                    date_disp = f"{raw_str[:4]}-{raw_str[4:6]}-{raw_str[6:]}"
+                else:
+                    date_disp = raw_str
             # 提取平台信息
             platform = m_dict.get("platform") or ""
-            # v2.13: 删除mol_id列
+            # v2.16: 增加序号列
             self.tree.insert(
                 "",
                 tk.END,
                 iid=m_dict["mol_id"],
                 values=(
+                    seq,
                     date_disp,
                     platform,
                     m_dict.get("gene"),

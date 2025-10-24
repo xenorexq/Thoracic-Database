@@ -25,16 +25,26 @@ from utils.validators import format_date6, format_birth_ym4, format_birth_ym6
 # Fields that should not appear in exported files.  These columns either come from
 # deprecated UI elements (e.g. vendor_lab) or have been removed from the
 # current version of the application (e.g. lymph node totals).
-EXCLUDE_FIELDS = {"vendor_lab", "ln_total", "ln_positive", "patient_id"}
+# 排除导出字段列表：新增 event_code 用于隐藏随访事件的内部编号
+EXCLUDE_FIELDS = {"vendor_lab", "ln_total", "ln_positive", "patient_id", "event_code"}
 
 # 与 CSV 导出一致的日期字段集合
 DATE_FIELDS_8 = {
     "surgery_date6",
+    "pathology_date",
     "report_date",
     "test_date",
     "last_visit_date",
     "death_date",
     "relapse_date",
+    "nac_date",
+    "adj_date",
+    "event_date",
+}
+
+DATE_LIKE_CYCLE_FIELDS = {
+    "nac_chemo_cycles",
+    "adj_chemo_cycles",
 }
 
 def _format_value(col: str, val: object) -> object:
@@ -49,6 +59,11 @@ def _format_value(col: str, val: object) -> object:
         if len(s) == 6 and s.isdigit():
             formatted = format_birth_ym6(s)
             return formatted.replace("-", "") if formatted else s
+        return s
+    if col in DATE_LIKE_CYCLE_FIELDS:
+        if len(s) == 6 and s.isdigit():
+            formatted = format_date6(s)
+            return formatted or s
         return s
     if col in DATE_FIELDS_8:
         if len(s) == 6 and s.isdigit():
@@ -164,6 +179,8 @@ def export_patient_to_excel(db: Database, patient_id: int, file_path: Path) -> N
                         items = db.get_pathologies_by_patient(patient_id)
                     elif table == "Molecular":
                         items = db.get_molecular_by_patient(patient_id)
+                    elif table == "FollowUpEvent":
+                        items = db.get_followup_events(patient_id)
                     else:
                         items = []
                     rows = []
@@ -228,4 +245,3 @@ def export_all_to_excel(db: Database, file_path: Path) -> None:
         raise PermissionError(f"无法写入文件 {file_path}，请检查文件权限或文件是否被占用") from e
     except Exception as e:
         raise Exception(f"导出Excel文件失败: {str(e)}") from e
-

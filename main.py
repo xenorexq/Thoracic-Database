@@ -181,6 +181,8 @@ class ThoracicApp:
 
         # 双击加载患者
         self.patient_tree.bind("<Double-1>", self.on_patient_double_click)
+        # 单击选择时即同步加载所有标签页，避免手动刷新
+        self.patient_tree.bind("<<TreeviewSelect>>", self.on_patient_select)
         
         # 新建按钮
         btn_frame = ttk.Frame(parent)
@@ -251,6 +253,23 @@ class ThoracicApp:
             patient_id = int(values[0])
             self.load_patient(patient_id)
 
+    def on_patient_select(self, event=None):
+        """选择患者列表项时同步加载所有标签页数据。"""
+        selection = self.patient_tree.selection()
+        if not selection:
+            return
+        item = selection[0]
+        values = self.patient_tree.item(item, "values")
+        if not values:
+            return
+        try:
+            patient_id = int(values[0])
+        except (TypeError, ValueError):
+            return
+        if patient_id == self.current_patient_id:
+            return
+        self.load_patient(patient_id)
+
     def load_patient(self, patient_id: int):
         """加载患者数据到各个Tab"""
         self.current_patient_id = patient_id
@@ -278,14 +297,34 @@ class ThoracicApp:
         self.current_patient_id = None
         self.cancer_type = None
         
-        # 清空所有Tab
+        # 清空并刷新所有Tab
+        # 患者/治疗页只需清空表单
         self.patient_tab.clear_form()
-        self.surgery_tab.clear_form()
-        self.path_tab.clear_form()
-        self.mol_tab.clear_form()
-        self.fu_tab.clear_form()
-        
-        # 切换到患者/治疗页
+        # 手术标签页
+        try:
+            self.surgery_tab.clear_form()
+            self.surgery_tab.load_patient(None)
+        except Exception:
+            pass
+        # 病理标签页
+        try:
+            self.path_tab.clear_form()
+            self.path_tab.load_patient(None)
+        except Exception:
+            pass
+        # 分子标签页
+        try:
+            self.mol_tab.clear_form()
+            self.mol_tab.load_patient(None)
+        except Exception:
+            pass
+        # 随访标签页
+        try:
+            self.fu_tab.clear_form()
+            self.fu_tab.load_patient(None)
+        except Exception:
+            pass
+        # 切换到患者/治疗页并更新状态
         self.notebook.select(0)
         self.status("新建患者")
 
@@ -309,7 +348,7 @@ class ThoracicApp:
         self.cancer_type = cancer_type
         # 通知各个Tab更新状态
         if hasattr(self.patient_tab, 'on_cancer_type_change'):
-            self.patient_tab.on_cancer_type_change(cancer_type)
+            self.patient_tab.on_cancer_type_change(cancer_type, notify_app=False)
         if hasattr(self.surgery_tab, 'on_cancer_type_change'):
             self.surgery_tab.on_cancer_type_change(cancer_type)
         if hasattr(self.path_tab, 'on_cancer_type_change'):
@@ -443,7 +482,7 @@ class ThoracicApp:
 
         about_text = """胸外科科研数据录入系统
 
-版本：v1.31
+版本：v3.0
 
 功能特点：
 • 患者信息管理（肺癌/食管癌）
@@ -471,4 +510,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 

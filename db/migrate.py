@@ -5,7 +5,9 @@
 在线检测并添加缺失的字段
 """
 
+import random
 import sqlite3
+import string
 from pathlib import Path
 
 def get_table_columns(conn, table_name):
@@ -25,6 +27,19 @@ def add_column_if_not_exists(conn, table_name, column_name, column_type, default
         return True
     return False
 
+
+def generate_unique_event_code(conn, patient_id: int, length: int = 6) -> str:
+    """Ϊ指定患者生成唯一的随访事件编号"""
+    digits = string.digits
+    while True:
+        candidate = "".join(random.choices(digits, k=length))
+        exists = conn.execute(
+            "SELECT 1 FROM FollowUpEvent WHERE patient_id=? AND event_code=?",
+            (patient_id, candidate),
+        ).fetchone()
+        if not exists:
+            return candidate
+
 def migrate_database(db_path):
     """执行数据库迁移"""
     print(f"开始迁移数据库: {db_path}")
@@ -38,6 +53,8 @@ def migrate_database(db_path):
         changes_made = True
 
     # Patient表新增: 家族恶性肿瘤史
+    if add_column_if_not_exists(conn, "Patient", "diabetes_history", "INTEGER", default=0):
+        changes_made = True
     if add_column_if_not_exists(conn, "Patient", "family_history", "INTEGER", default=0):
         changes_made = True
 
@@ -99,14 +116,33 @@ def migrate_database(db_path):
                 event_date TEXT NOT NULL,
                 event_type TEXT NOT NULL,
                 event_details TEXT,
+                event_code TEXT NOT NULL,
                 FOREIGN KEY (patient_id) REFERENCES Patient(patient_id) ON DELETE CASCADE
             )
         """)
         conn.execute("CREATE INDEX idx_followup_event_patient_id ON FollowUpEvent(patient_id)")
         conn.execute("CREATE INDEX idx_followup_event_date ON FollowUpEvent(event_date DESC)")
+        conn.execute("CREATE UNIQUE INDEX idx_followup_event_code ON FollowUpEvent(patient_id, event_code)")
         conn.commit()
         changes_made = True
-    
+    else:
+        if add_column_if_not_exists(conn, "FollowUpEvent", "event_code", "TEXT"):
+            changes_made = True
+
+    followup_columns = get_table_columns(conn, "FollowUpEvent")
+    if "event_code" in followup_columns:
+        cursor = conn.execute("SELECT event_id, patient_id FROM FollowUpEvent WHERE event_code IS NULL OR event_code = ''")
+        rows = cursor.fetchall()
+        if rows:
+            print("为 FollowUpEvent 补全随机编号...")
+            for event_id, patient_id in rows:
+                code = generate_unique_event_code(conn, patient_id)
+                conn.execute("UPDATE FollowUpEvent SET event_code=? WHERE event_id=?", (code, event_id))
+            conn.commit()
+            changes_made = True
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_followup_event_code ON FollowUpEvent(patient_id, event_code)")
+        conn.commit()
+
     conn.close()
     
     if changes_made:

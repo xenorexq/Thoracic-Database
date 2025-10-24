@@ -14,7 +14,9 @@ Note: SQLite will enforce referential integrity via foreign keys.  The
 
 from __future__ import annotations
 
+import random
 import sqlite3
+import string
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Iterable
@@ -67,6 +69,7 @@ class Database:
                 eso_grade TEXT,
                 eso_location TEXT,
                 eso_from_incisors_cm REAL,
+                diabetes_history INTEGER DEFAULT 0,
                 family_history INTEGER DEFAULT 0,
                 nac_chemo INTEGER,
                 nac_chemo_cycles INTEGER,
@@ -229,6 +232,7 @@ class Database:
                 event_date TEXT NOT NULL,
                 event_type TEXT NOT NULL,
                 event_details TEXT,
+                event_code TEXT NOT NULL,
                 FOREIGN KEY (patient_id) REFERENCES Patient(patient_id) ON DELETE CASCADE
             );
             """
@@ -238,6 +242,9 @@ class Database:
         )
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_followup_event_date ON FollowUpEvent(event_date DESC);"
+        )
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_followup_event_code ON FollowUpEvent(patient_id, event_code);"
         )
 
         # Mapping tables for staging
@@ -459,14 +466,80 @@ class Database:
         return cur.fetchone()
 
     # ------------------ FollowUpEvent operations (New event-driven system) ------------------
-    def insert_followup_event(self, patient_id: int, event_date: str, event_type: str, event_details: str = "") -> int:
+    def generate_unique_event_code(self, patient_id: int, length: int = 6) -> str:
+        """Generate a random numeric event code unique within a patient."""
+        alphabet = string.digits
+        while True:
+            candidate = "".join(random.choices(alphabet, k=length))
+            if not self.is_event_code_taken(patient_id, candidate):
+                return candidate
+
+    def is_event_code_taken(
+        self,
+        patient_id: int,
+        event_code: str,
+        exclude_event_id: Optional[int] = None,
+    ) -> bool:
+        """Check whether an event_code already exists for the patient."""
+        row = self.conn.execute(
+            "SELECT event_id FROM FollowUpEvent WHERE patient_id=? AND event_code=?",
+            (patient_id, event_code),
+        ).fetchone()
+        if row is None:
+            return False
+        if exclude_event_id is not None and row["event_id"] == exclude_event_id:
+            return False
+        return True
+
+    def insert_followup_event(
+        self,
+        patient_id: int,
+        event_date: str,
+        event_type: str,
+        event_details: str = "",
+        event_code: Optional[str] = None,
+    ) -> int:
         """Insert a new follow-up event and return the event_id."""
-        cur = self.conn.execute(
-            "INSERT INTO FollowUpEvent (patient_id, event_date, event_type, event_details) VALUES (?, ?, ?, ?)",
-            (patient_id, event_date, event_type, event_details)
+        code = event_code or self.generate_unique_event_code(patient_id)
+        cur = self.conn.cursor()
+        cur.execute(
+            "INSERT INTO FollowUpEvent (patient_id, event_date, event_type, event_details, event_code) VALUES (?, ?, ?, ?, ?)",
+            (patient_id, event_date, event_type, event_details, code),
         )
         self.conn.commit()
         return cur.lastrowid
+
+    def update_followup_event(
+        self,
+        event_id: int,
+        patient_id: int,
+        event_date: str,
+        event_type: str,
+        event_details: str = "",
+        event_code: Optional[str] = None,
+    ) -> None:
+        """Update an existing follow-up event."""
+        code = event_code
+        if code is None:
+            row = self.get_followup_event_by_id(event_id)
+            if not row:
+                raise ValueError(f"Follow-up event {event_id} not found")
+            code = row["event_code"]
+        self.conn.execute(
+            """
+            UPDATE FollowUpEvent
+            SET event_date = ?, event_type = ?, event_details = ?, event_code = ?
+            WHERE event_id = ? AND patient_id = ?
+            """,
+            (event_date, event_type, event_details, code, event_id, patient_id),
+        )
+        self.conn.commit()
+
+    def get_followup_event_by_id(self, event_id: int) -> Optional[sqlite3.Row]:
+        """Retrieve a single follow-up event by its primary key."""
+        return self.conn.execute(
+            "SELECT * FROM FollowUpEvent WHERE event_id=?", (event_id,)
+        ).fetchone()
 
     def get_followup_events(self, patient_id: int) -> List[sqlite3.Row]:
         """Get all follow-up events for a patient, ordered by date descending (newest first)."""

@@ -26,8 +26,8 @@ class PathologyTab(ttk.Frame):
     def _build_widgets(self) -> None:
         list_frame = ttk.LabelFrame(self, text="病理列表")
         list_frame.pack(fill="x", expand=False, padx=5, pady=5)
-        # v2.13: 删除path_id列，将pathology_date移到最左侧
-        columns = ["pathology_date", "pathology_no", "histology", "specimen_type"]
+        # v2.16: 新增序号列，保证每位患者内独立编号
+        columns = ["seq", "pathology_date", "pathology_no", "histology", "specimen_type"]
         # 将列表高度限制为3行，以便下面的表单区域更容易显示完整内容
         self.tree = ttk.Treeview(
             list_frame,
@@ -37,11 +37,13 @@ class PathologyTab(ttk.Frame):
             height=3,
         )
         # 标题设置为中文
+        self.tree.heading("seq", text="序号")
         self.tree.heading("pathology_date", text="日期")
         self.tree.heading("pathology_no", text="病理号")
         self.tree.heading("histology", text="组织学")
         self.tree.heading("specimen_type", text="标本类型")
         # 列宽设置
+        self.tree.column("seq", width=60, anchor="center")
         self.tree.column("pathology_date", width=100, anchor="center")
         self.tree.column("pathology_no", width=120, anchor="center")
         self.tree.column("histology", width=100, anchor="center")
@@ -178,19 +180,29 @@ class PathologyTab(ttk.Frame):
         pathologies = self.db.get_pathologies_by_patient(patient_id)
         # v2.13: 按日期降序排列（最近的在上）
         pathologies_sorted = sorted(pathologies, key=lambda x: dict(x).get("pathology_date") or "", reverse=True)
-        for p in pathologies_sorted:
+        for seq, p in enumerate(pathologies_sorted, 1):
             # 将 sqlite3.Row 转换为字典，避免使用 Row 的 .get 方法
             p_dict = dict(p)
             no = p_dict.get("pathology_no") or ""
             # 提取标本类型
             specimen = p_dict.get("specimen_type") or ""
             # v2.13: 删除path_id列，添加pathology_date列
-            date_disp = p_dict.get("pathology_date") or ""
+            raw_date = p_dict.get("pathology_date") or ""
+            date_disp = ""
+            if raw_date:
+                raw_str = str(raw_date)
+                if len(raw_str) == 6 and raw_str.isdigit():
+                    date_disp = format_date6(raw_str)
+                elif len(raw_str) == 8 and raw_str.isdigit():
+                    date_disp = f"{raw_str[:4]}-{raw_str[4:6]}-{raw_str[6:]}"
+                else:
+                    date_disp = raw_str
             self.tree.insert(
                 "",
                 tk.END,
                 iid=p_dict["path_id"],
                 values=(
+                    seq,
                     date_disp,
                     no,
                     p_dict.get("histology"),
