@@ -26,9 +26,8 @@ class PathologyTab(ttk.Frame):
     def _build_widgets(self) -> None:
         list_frame = ttk.LabelFrame(self, text="病理列表")
         list_frame.pack(fill="x", expand=False, padx=5, pady=5)
-        # 列：ID、病理号、组织学、标本类型
-        # 按要求删除分期列，改为标本类型列
-        columns = ["path_id", "pathology_no", "histology", "specimen_type"]
+        # v2.13: 删除path_id列，将pathology_date移到最左侧
+        columns = ["pathology_date", "pathology_no", "histology", "specimen_type"]
         # 将列表高度限制为3行，以便下面的表单区域更容易显示完整内容
         self.tree = ttk.Treeview(
             list_frame,
@@ -38,13 +37,15 @@ class PathologyTab(ttk.Frame):
             height=3,
         )
         # 标题设置为中文
-        self.tree.heading("path_id", text="ID")
+        self.tree.heading("pathology_date", text="日期")
         self.tree.heading("pathology_no", text="病理号")
         self.tree.heading("histology", text="组织学")
         self.tree.heading("specimen_type", text="标本类型")
-        # 列宽统一并居中
-        for col in columns:
-            self.tree.column(col, width=100, anchor="center")
+        # 列宽设置
+        self.tree.column("pathology_date", width=100, anchor="center")
+        self.tree.column("pathology_no", width=120, anchor="center")
+        self.tree.column("histology", width=100, anchor="center")
+        self.tree.column("specimen_type", width=100, anchor="center")
         self.tree.pack(fill="x", expand=False)
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
 
@@ -119,19 +120,23 @@ class PathologyTab(ttk.Frame):
         ttk.Label(form_frame, text="病理号").grid(row=3, column=2)
         self.pathology_no_var = tk.StringVar()
         ttk.Entry(form_frame, textvariable=self.pathology_no_var, width=15).grid(row=3, column=3, columnspan=2, sticky="w")
-        # 肺腺癌主要亚型：新增下拉框（NA/贴壁型/腺泡型/乳头型/微乳头型/实体型）
-        ttk.Label(form_frame, text="肺腺癌主要亚型").grid(row=3, column=5)
+        # 新增：病理日期 (yymmdd格式)
+        ttk.Label(form_frame, text="病理日期 (yymmdd)").grid(row=3, column=5)
+        self.pathology_date_var = tk.StringVar()
+        ttk.Entry(form_frame, textvariable=self.pathology_date_var, width=10).grid(row=3, column=6)
+        # Row 4: 肺腺癌主要亚型下移一行
+        ttk.Label(form_frame, text="肺腺癌主要亚型").grid(row=4, column=0)
         self.aden_subtype_var = tk.StringVar()
         self.aden_subtype_cb = ttk.Combobox(
             form_frame,
             textvariable=self.aden_subtype_var,
             values=["NA", "贴壁型", "腺泡型", "乳头型", "微乳头型", "实体型"],
             state="readonly",
-            width=10,
+            width=12,
         )
-        self.aden_subtype_cb.grid(row=3, column=6)
-        # Row 4: TRG独立一行
-        ttk.Label(form_frame, text="TRG").grid(row=4, column=0)
+        self.aden_subtype_cb.grid(row=4, column=1)
+        # Row 5: TRG独立一行
+        ttk.Label(form_frame, text="TRG").grid(row=5, column=0)
         self.trg_var = tk.StringVar()
         trg_options = [
             "N/A",
@@ -146,16 +151,16 @@ class PathologyTab(ttk.Frame):
             textvariable=self.trg_var,
             values=trg_options,
             state="readonly",
-            width=20,
+            width=35,
         )
-        self.trg_cb.grid(row=4, column=1, columnspan=3, sticky="w")
-        # 备注
-        ttk.Label(form_frame, text="备注").grid(row=5, column=0, sticky="e")
+        self.trg_cb.grid(row=5, column=1, columnspan=5, sticky="w")
+        # Row 6: 备注
+        ttk.Label(form_frame, text="备注").grid(row=6, column=0, sticky="e")
         self.notes_text = tk.Text(form_frame, width=80, height=3)
-        self.notes_text.grid(row=5, column=1, columnspan=7, sticky="w")
-        # 操作按钮
+        self.notes_text.grid(row=6, column=1, columnspan=7, sticky="w")
+        # Row 7: 操作按钮
         btn_frame = ttk.Frame(form_frame)
-        btn_frame.grid(row=6, column=0, columnspan=8, pady=5)
+        btn_frame.grid(row=7, column=0, columnspan=8, pady=5)
         ttk.Button(btn_frame, text="新建", command=self.new_record).pack(side="left", padx=2)
         ttk.Button(btn_frame, text="保存", command=self.save_record).pack(side="left", padx=2)
         ttk.Button(btn_frame, text="删除", command=self.delete_record).pack(side="left", padx=2)
@@ -171,18 +176,22 @@ class PathologyTab(ttk.Frame):
         if not patient_id:
             return
         pathologies = self.db.get_pathologies_by_patient(patient_id)
-        for p in pathologies:
+        # v2.13: 按日期降序排列（最近的在上）
+        pathologies_sorted = sorted(pathologies, key=lambda x: dict(x).get("pathology_date") or "", reverse=True)
+        for p in pathologies_sorted:
             # 将 sqlite3.Row 转换为字典，避免使用 Row 的 .get 方法
             p_dict = dict(p)
             no = p_dict.get("pathology_no") or ""
             # 提取标本类型
             specimen = p_dict.get("specimen_type") or ""
+            # v2.13: 删除path_id列，添加pathology_date列
+            date_disp = p_dict.get("pathology_date") or ""
             self.tree.insert(
                 "",
                 tk.END,
                 iid=p_dict["path_id"],
                 values=(
-                    p_dict["path_id"],
+                    date_disp,
                     no,
                     p_dict.get("histology"),
                     specimen,
@@ -252,6 +261,9 @@ class PathologyTab(ttk.Frame):
         else:
             self.trg_var.set("")
         self.pathology_no_var.set(row.get("pathology_no") or "")
+        # 新增：病理日期
+        if hasattr(self, "pathology_date_var"):
+            self.pathology_date_var.set(row.get("pathology_date") or "")
         self.notes_text.delete("1.0", tk.END)
         self.notes_text.insert(tk.END, row.get("notes_path") or "")
         # 新增：肺腺癌主要亚型
@@ -276,6 +288,9 @@ class PathologyTab(ttk.Frame):
         # 重置沿气道播散与病理号字段
         self.airway_var.set(0)
         self.pathology_no_var.set("")
+        # 重置病理日期
+        if hasattr(self, "pathology_date_var"):
+            self.pathology_date_var.set("")
         self.notes_text.delete("1.0", tk.END)
         # 初始化肺腺癌主要亚型下拉框为空
         if hasattr(self, "aden_subtype_var"):
@@ -303,6 +318,8 @@ class PathologyTab(ttk.Frame):
             # TRG 转换: 首先检查是否选择了有效数字选项
             "trg": self._parse_trg(),
             "pathology_no": self.pathology_no_var.get() or None,
+            # 新增：病理日期
+            "pathology_date": self.pathology_date_var.get() or None,
             "notes_path": self.notes_text.get("1.0", tk.END).strip() or None,
             # 新增肺腺癌主要亚型
             "aden_subtype": self.aden_subtype_var.get() or None,

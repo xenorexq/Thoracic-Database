@@ -31,12 +31,16 @@ class SurgeryTab(ttk.Frame):
         # Top list of surgeries
         list_frame = ttk.LabelFrame(self, text="手术列表")
         list_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        columns = ["surgery_id", "date", "indication", "duration_min"]
+        # v2.13: 删除surgery_id列，将date移到最左侧
+        columns = ["date", "indication", "duration_min"]
         # 限制列表高度为3行，避免占用过多垂直空间
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="browse", height=3)
-        for col in columns:
-            self.tree.heading(col, text=col)
-            self.tree.column(col, width=80)
+        self.tree.heading("date", text="日期")
+        self.tree.heading("indication", text="手术适应症")
+        self.tree.heading("duration_min", text="时长(分钟)")
+        self.tree.column("date", width=100, anchor="center")
+        self.tree.column("indication", width=150, anchor="w")
+        self.tree.column("duration_min", width=100, anchor="center")
         self.tree.pack(fill="both", expand=True)
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
 
@@ -208,10 +212,13 @@ class SurgeryTab(ttk.Frame):
         if not patient_id:
             return
         surgeries = self.db.get_surgeries_by_patient(patient_id)
-        for s in surgeries:
+        # v2.13: 按日期降序排列（最近的在上）
+        surgeries_sorted = sorted(surgeries, key=lambda x: dict(x).get("surgery_date6") or "", reverse=True)
+        for s in surgeries_sorted:
             s_dict = dict(s)  # 转换为字典
             date_disp = format_date6(s_dict.get("surgery_date6")) if s_dict.get("surgery_date6") else ""
-            self.tree.insert("", tk.END, iid=s_dict["surgery_id"], values=(s_dict["surgery_id"], date_disp, s_dict.get("indication"), s_dict.get("duration_min")))
+            # v2.13: 删除surgery_id列
+            self.tree.insert("", tk.END, iid=s_dict["surgery_id"], values=(date_disp, s_dict.get("indication"), s_dict.get("duration_min")))
         # Automatically select and load the first record if available
         children = self.tree.get_children()
         if children:

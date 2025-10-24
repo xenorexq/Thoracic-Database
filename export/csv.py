@@ -163,7 +163,7 @@ def export_patient_to_csv(db: Database, patient_id: int, dir_path: Path, prefix:
         if prefix is None:
             prefix = f"patient{patient_id}"
         
-        tables = ["Patient", "Surgery", "Pathology", "Molecular", "FollowUp"]
+        tables = ["Patient", "Surgery", "Pathology", "Molecular", "FollowUpEvent"]
         patient_row = db.get_patient_by_id(patient_id)
         
         if not patient_row:
@@ -181,15 +181,6 @@ def export_patient_to_csv(db: Database, patient_id: int, dir_path: Path, prefix:
             try:
                 if table == "Patient":
                     rows = patient_dict_list
-                elif table == "FollowUp":
-                    row = db.get_followup(patient_id)
-                    if row:
-                        rdict = dict(row)
-                        if hospital_id is not None:
-                            rdict = {"hospital_id": hospital_id, **rdict}
-                        rows = [rdict]
-                    else:
-                        rows = []
                 else:
                     if table == "Surgery":
                         items = db.get_surgeries_by_patient(patient_id)
@@ -234,7 +225,7 @@ def export_all_to_csv(db: Database, dir_path: Path) -> List[Path]:
             row_dict = dict(row)
             pat_map[row_dict.get("patient_id")] = row_dict.get("hospital_id")
         
-        for table in ["Patient", "Surgery", "Pathology", "Molecular", "FollowUp"]:
+        for table in ["Patient", "Surgery", "Pathology", "Molecular", "FollowUpEvent"]:
             try:
                 rows = db.export_table(table)
                 rows_dicts: List[dict] = []

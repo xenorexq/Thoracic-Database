@@ -76,6 +76,11 @@ class Database:
                 nac_targeted_cycles INTEGER,
                 -- 新增: 新辅助放疗勾选
                 nac_radiation INTEGER,
+                -- 新增: 新辅助抗血管治疗 (v2.13)
+                nac_antiangio INTEGER,
+                nac_antiangio_cycles INTEGER,
+                -- 新增: 新辅助治疗日期 (yymmdd格式)
+                nac_date TEXT,
                 adj_chemo INTEGER,
                 adj_chemo_cycles INTEGER,
                 adj_immuno INTEGER,
@@ -84,6 +89,11 @@ class Database:
                 adj_targeted_cycles INTEGER,
                 -- 新增: 辅助放疗勾选
                 adj_radiation INTEGER,
+                -- 新增: 辅助抗血管治疗 (v2.13)
+                adj_antiangio INTEGER,
+                adj_antiangio_cycles INTEGER,
+                -- 新增: 辅助治疗日期 (yymmdd格式)
+                adj_date TEXT,
                 notes_patient TEXT
             );
             """
@@ -148,6 +158,8 @@ class Database:
                 pleural_invasion INTEGER,
                 airway_spread INTEGER,
                 pathology_no TEXT,
+                -- 新增: 病理报告日期 (yymmdd格式)
+                pathology_date TEXT,
                 ln_total INTEGER,
                 ln_positive INTEGER,
                 trg INTEGER,
@@ -189,7 +201,7 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_mol_patient_id ON Molecular(patient_id);"
         )
 
-        # FollowUp table
+        # FollowUp table (Legacy - kept for migration compatibility)
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS FollowUp (
@@ -206,6 +218,26 @@ class Database:
                 FOREIGN KEY (patient_id) REFERENCES Patient(patient_id) ON DELETE CASCADE
             );
             """
+        )
+
+        # FollowUpEvent table (New event-driven system)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS FollowUpEvent (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                patient_id INTEGER NOT NULL,
+                event_date TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                event_details TEXT,
+                FOREIGN KEY (patient_id) REFERENCES Patient(patient_id) ON DELETE CASCADE
+            );
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_followup_event_patient_id ON FollowUpEvent(patient_id);"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_followup_event_date ON FollowUpEvent(event_date DESC);"
         )
 
         # Mapping tables for staging
@@ -426,11 +458,34 @@ class Database:
         )
         return cur.fetchone()
 
+    # ------------------ FollowUpEvent operations (New event-driven system) ------------------
+    def insert_followup_event(self, patient_id: int, event_date: str, event_type: str, event_details: str = "") -> int:
+        """Insert a new follow-up event and return the event_id."""
+        cur = self.conn.execute(
+            "INSERT INTO FollowUpEvent (patient_id, event_date, event_type, event_details) VALUES (?, ?, ?, ?)",
+            (patient_id, event_date, event_type, event_details)
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def get_followup_events(self, patient_id: int) -> List[sqlite3.Row]:
+        """Get all follow-up events for a patient, ordered by date descending (newest first)."""
+        cur = self.conn.execute(
+            "SELECT * FROM FollowUpEvent WHERE patient_id=? ORDER BY event_date DESC, event_id DESC",
+            (patient_id,)
+        )
+        return cur.fetchall()
+
+    def delete_followup_event(self, event_id: int) -> None:
+        """Delete a specific follow-up event."""
+        self.conn.execute("DELETE FROM FollowUpEvent WHERE event_id=?", (event_id,))
+        self.conn.commit()
+
     # ------------------ General operations ------------------
     def export_table(self, table_name: str) -> List[sqlite3.Row]:
         """Return all rows for the given table for export purposes."""
         # 白名单验证表名，防止SQL注入
-        allowed_tables = ['Patient', 'Surgery', 'Pathology', 'Molecular', 'FollowUp']
+        allowed_tables = ['Patient', 'Surgery', 'Pathology', 'Molecular', 'FollowUp', 'FollowUpEvent']
         if table_name not in allowed_tables:
             raise ValueError(f"Invalid table name: {table_name}")
         cur = self.conn.execute(f"SELECT * FROM {table_name}")

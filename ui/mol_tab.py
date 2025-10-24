@@ -27,15 +27,19 @@ class MolecularTab(ttk.Frame):
     def _build_widgets(self) -> None:
         list_frame = ttk.LabelFrame(self, text="分子列表")
         list_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        # 列顺序：ID、平台、检测日期、基因、突变
-        # 按要求在 mol_id 后增加一列显示平台信息
-        columns = ["mol_id", "platform", "test_date", "gene", "variant"]
+        # v2.13: 删除mol_id列，将test_date移到最左侧
+        columns = ["test_date", "platform", "gene", "variant"]
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="browse")
-        # 设置列标题，若需要可自定义中文标题
-        for col in columns:
-            # 使用英文名称作为内部标识，标题保持列名可读
-            self.tree.heading(col, text=col)
-            self.tree.column(col, width=100)
+        # 设置列标题为中文
+        self.tree.heading("test_date", text="检测日期")
+        self.tree.heading("platform", text="平台")
+        self.tree.heading("gene", text="基因")
+        self.tree.heading("variant", text="突变")
+        # 设置列宽
+        self.tree.column("test_date", width=100, anchor="center")
+        self.tree.column("platform", width=100, anchor="center")
+        self.tree.column("gene", width=120, anchor="center")
+        self.tree.column("variant", width=200, anchor="w")
         self.tree.pack(fill="both", expand=True)
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
 
@@ -143,22 +147,23 @@ class MolecularTab(ttk.Frame):
         if not patient_id:
             return
         moleculars = self.db.get_molecular_by_patient(patient_id)
-        for m in moleculars:
+        # v2.13: 按日期降序排列（最近的在上）
+        moleculars_sorted = sorted(moleculars, key=lambda x: dict(x).get("test_date") or "", reverse=True)
+        for m in moleculars_sorted:
             # 将 sqlite3.Row 转换为字典，避免使用 Row 的 .get 方法
             m_dict = dict(m)
             test_date = m_dict.get("test_date")
             date_disp = format_date6(test_date) if test_date else ""
             # 提取平台信息
             platform = m_dict.get("platform") or ""
-            # 依次插入 mol_id、platform、test_date、gene、variant
+            # v2.13: 删除mol_id列
             self.tree.insert(
                 "",
                 tk.END,
                 iid=m_dict["mol_id"],
                 values=(
-                    m_dict["mol_id"],
-                    platform,
                     date_disp,
+                    platform,
                     m_dict.get("gene"),
                     m_dict.get("variant"),
                 ),

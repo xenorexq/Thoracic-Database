@@ -1,146 +1,340 @@
 """
-Follow-up tab for thoracic entry application.
+Follow-up tab for thoracic entry application (v2.15 - Rebuilt).
 
-Allows recording a single follow-up entry per patient.  If a follow-up entry
-exists it is loaded and can be edited; otherwise a new entry can be created.
+This module implements an event-driven follow-up logging system where each
+follow-up interaction is recorded as a separate, timestamped event.
+Rebuilt based on surgery_tab.py structure to fix patient switching issues.
 """
 
 from __future__ import annotations
 
 import tkinter as tk
 from tkinter import ttk, messagebox
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from main import ThoracicApp
 
 from db.models import Database
-from utils.validators import validate_date6, format_date6
 
 
 class FollowUpTab(ttk.Frame):
-    def __init__(self, parent: tk.Widget, app: "ThoracicApp") -> None:
+    """Follow-up tab with event-driven logging system."""
+    
+    # 预定义的事件类型
+    EVENT_TYPES = ["生存", "复发/转移", "进展", "死亡", "失访"]
+    
+    def __init__(self, parent: tk.Widget, app: ThoracicApp) -> None:
         super().__init__(parent)
         self.app = app
         self.db: Database = app.db
+        self.current_patient_id: Optional[int] = None
+        self.current_event_id: Optional[int] = None
         self._build_widgets()
 
     def _build_widgets(self) -> None:
-        form_frame = ttk.LabelFrame(self, text="随访信息")
-        form_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        # Row 0: last_visit_date, status
-        ttk.Label(form_frame, text="最近随访日期(yymmdd)").grid(row=0, column=0)
-        self.last_visit_var = tk.StringVar()
-        ttk.Entry(form_frame, textvariable=self.last_visit_var, width=8).grid(row=0, column=1)
-        self.last_visit_disp = ttk.Label(form_frame, text="")
-        self.last_visit_disp.grid(row=0, column=2)
-        self.last_visit_var.trace_add("write", lambda *args: self.last_visit_disp.config(text=format_date6(self.last_visit_var.get())))
-        ttk.Label(form_frame, text="状态").grid(row=0, column=3)
-        self.status_var = tk.StringVar()
-        status_cb = ttk.Combobox(
-            form_frame,
-            textvariable=self.status_var,
-            values=["生存", "死亡", "失访"],
-            state="readonly",
-            width=6,
+        """构建UI组件：上部事件列表 + 下部输入面板"""
+        
+        # ========== 上部：事件列表 ==========
+        list_frame = ttk.LabelFrame(self, text="随访事件列表")
+        list_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        # 创建Treeview
+        columns = ("event_date", "event_type", "event_details")
+        self.tree = ttk.Treeview(
+            list_frame,
+            columns=columns,
+            show="headings",
+            height=10
         )
-        status_cb.grid(row=0, column=4)
-        # Row 1: death_date (only when status=死亡)
-        ttk.Label(form_frame, text="死亡日期 (yymmdd)").grid(row=1, column=0)
-        self.death_var = tk.StringVar()
-        ttk.Entry(form_frame, textvariable=self.death_var, width=8).grid(row=1, column=1)
-        self.death_disp = ttk.Label(form_frame, text="")
-        self.death_disp.grid(row=1, column=2)
-        self.death_var.trace_add("write", lambda *args: self.death_disp.config(text=format_date6(self.death_var.get())))
-        # Row 2: relapse
-        self.relapse_var = tk.IntVar()
-        ttk.Checkbutton(form_frame, text="复发", variable=self.relapse_var).grid(row=2, column=0)
-        ttk.Label(form_frame, text="复发日期 (yymmdd)").grid(row=2, column=1)
-        self.relapse_date_var = tk.StringVar()
-        ttk.Entry(form_frame, textvariable=self.relapse_date_var, width=8).grid(row=2, column=2)
-        self.relapse_date_disp = ttk.Label(form_frame, text="")
-        self.relapse_date_disp.grid(row=2, column=3)
-        self.relapse_date_var.trace_add("write", lambda *args: self.relapse_date_disp.config(text=format_date6(self.relapse_date_var.get())))
-        ttk.Label(form_frame, text="复发部位").grid(row=2, column=4)
-        self.relapse_site_var = tk.StringVar()
-        ttk.Entry(form_frame, textvariable=self.relapse_site_var, width=15).grid(row=2, column=5)
-        # Row 3: os, dfs
-        ttk.Label(form_frame, text="OS(月)").grid(row=3, column=0)
-        self.os_var = tk.StringVar()
-        ttk.Entry(form_frame, textvariable=self.os_var, width=6).grid(row=3, column=1)
-        ttk.Label(form_frame, text="DFS(月)").grid(row=3, column=2)
-        self.dfs_var = tk.StringVar()
-        ttk.Entry(form_frame, textvariable=self.dfs_var, width=6).grid(row=3, column=3)
-        # Notes
-        ttk.Label(form_frame, text="备注").grid(row=4, column=0, sticky="e")
-        self.notes_text = tk.Text(form_frame, width=80, height=3)
-        self.notes_text.grid(row=4, column=1, columnspan=5, sticky="w")
-        # Buttons
-        btn_frame = ttk.Frame(form_frame)
-        btn_frame.grid(row=5, column=0, columnspan=6, pady=5)
-        ttk.Button(btn_frame, text="保存/更新", command=self.save_record).pack(side="left", padx=2)
-        # 刷新按钮：重新加载当前患者的随访记录
-        ttk.Button(btn_frame, text="刷新", command=lambda: self.load_patient(self.app.current_patient_id)).pack(side="left", padx=2)
-        # 清空按钮放置在刷新按钮之后
-        ttk.Button(btn_frame, text="清空", command=self.clear_form).pack(side="left", padx=2)
+        
+        # 设置列标题和宽度
+        self.tree.heading("event_date", text="日期")
+        self.tree.heading("event_type", text="事件类型")
+        self.tree.heading("event_details", text="详情")
+        
+        self.tree.column("event_date", width=100, anchor="center")
+        self.tree.column("event_type", width=100, anchor="center")
+        self.tree.column("event_details", width=300, anchor="w")
+        
+        # 添加滚动条
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        
+        self.tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # 绑定选择事件
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+        
+        # 绑定右键菜单
+        self.tree.bind("<Button-3>", self._on_right_click)
+        
+        # ========== 下部：输入面板 ==========
+        input_frame = ttk.LabelFrame(self, text="新增/编辑随访事件")
+        input_frame.pack(fill="x", padx=5, pady=5)
+        
+        # 第一行：事件类型 + 事件日期
+        row1 = ttk.Frame(input_frame)
+        row1.pack(fill="x", padx=5, pady=5)
+        
+        ttk.Label(row1, text="事件类型:").pack(side="left")
+        self.event_type_var = tk.StringVar()
+        self.event_type_combo = ttk.Combobox(
+            row1,
+            textvariable=self.event_type_var,
+            values=self.EVENT_TYPES,
+            state="readonly",
+            width=15
+        )
+        self.event_type_combo.pack(side="left", padx=5)
+        self.event_type_combo.bind("<<ComboboxSelected>>", self._on_event_type_change)
+        
+        ttk.Label(row1, text="事件日期 (YYYYMMDD):").pack(side="left", padx=(20, 0))
+        self.event_date_var = tk.StringVar()
+        ttk.Entry(row1, textvariable=self.event_date_var, width=15).pack(side="left", padx=5)
+        
+        # 第二行：部位（条件性显示）
+        row2 = ttk.Frame(input_frame)
+        row2.pack(fill="x", padx=5, pady=5)
+        
+        self.site_label = ttk.Label(row2, text="部位:")
+        self.site_var = tk.StringVar()
+        self.site_entry = ttk.Entry(row2, textvariable=self.site_var, width=30)
+        
+        # 第三行：备注
+        row3 = ttk.Frame(input_frame)
+        row3.pack(fill="x", padx=5, pady=5)
+        
+        ttk.Label(row3, text="备注:").pack(side="left")
+        self.notes_var = tk.StringVar()
+        ttk.Entry(row3, textvariable=self.notes_var, width=60).pack(side="left", padx=5, fill="x", expand=True)
+        
+        # 第四行：按钮
+        btn_frame = ttk.Frame(input_frame)
+        btn_frame.pack(fill="x", padx=5, pady=5)
+        
+        ttk.Button(btn_frame, text="保存", command=self.save_record).pack(side="left", padx=2)
+        ttk.Button(btn_frame, text="新建", command=self.new_record).pack(side="left", padx=2)
+        ttk.Button(btn_frame, text="删除", command=self.delete_record).pack(side="left", padx=2)
 
-    def load_patient(self, patient_id: Optional[int]) -> None:
-        self.clear_form()
-        if not patient_id:
+    def _on_event_type_change(self, event=None) -> None:
+        """当事件类型改变时，显示或隐藏部位字段"""
+        event_type = self.event_type_var.get()
+        if event_type in ["复发/转移", "进展"]:
+            # 显示部位字段
+            self.site_label.pack(side="left")
+            self.site_entry.pack(side="left", padx=5)
+        else:
+            # 隐藏部位字段
+            self.site_label.pack_forget()
+            self.site_entry.pack_forget()
+            self.site_var.set("")  # 清空部位
+
+    def load_patient(self, patient_id: int) -> None:
+        """当切换患者时调用，加载该患者的所有随访事件"""
+        self.current_patient_id = patient_id
+        self.current_event_id = None
+        
+        # 清空事件列表
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        
+        # 查询该患者的所有随访事件
+        events = self.db.get_followup_events(patient_id)
+        
+        # 按日期降序排序（最新的在上）
+        events_sorted = sorted(events, key=lambda e: dict(e).get("event_date") or "", reverse=True)
+        
+        # 填充到树形视图
+        for e in events_sorted:
+            e_dict = dict(e)
+            event_id = e_dict["event_id"]
+            event_date = e_dict.get("event_date") or ""
+            event_type = e_dict.get("event_type") or ""
+            event_details = e_dict.get("event_details") or ""
+            
+            # 插入到树形视图，使用event_id作为iid
+            self.tree.insert("", tk.END, iid=event_id, values=(event_date, event_type, event_details))
+        
+        # 自动选择第一条记录
+        children = self.tree.get_children()
+        if children:
+            first = children[0]
+            self.tree.selection_set(first)
+            try:
+                self.load_record(int(first))
+            except Exception as e:
+                print(f"Warning: Failed to load follow-up event: {e}")
+        else:
+            # 没有记录时清空输入框
+            self.new_record()
+
+    def _on_tree_select(self, event) -> None:
+        """当选择事件列表中的某一项时，加载该事件的详细信息"""
+        sel = self.tree.selection()
+        if sel:
+            self.load_record(int(sel[0]))
+
+    def _on_right_click(self, event) -> None:
+        """右键点击事件列表时弹出删除菜单"""
+        item = self.tree.identify_row(event.y)
+        if not item:
             return
-        row = self.db.get_followup(patient_id)
+        # 选中右键所在行
+        self.tree.selection_set(item)
+        # 显示菜单
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="删除", command=self.delete_record)
+        menu.post(event.x_root, event.y_root)
+
+    def load_record(self, event_id: int) -> None:
+        """加载指定event_id的随访事件到输入框"""
+        if not self.current_patient_id:
+            return
+        
+        # 从数据库查询该事件
+        events = self.db.get_followup_events(self.current_patient_id)
+        row = None
+        for e in events:
+            if dict(e)["event_id"] == event_id:
+                row = e
+                break
+        
         if not row:
             return
-        self.last_visit_var.set(row.get("last_visit_date") or "")
-        self.status_var.set(row.get("status") or "")
-        self.death_var.set(row.get("death_date") or "")
-        self.relapse_var.set(row.get("relapse") or 0)
-        self.relapse_date_var.set(row.get("relapse_date") or "")
-        self.relapse_site_var.set(row.get("relapse_site") or "")
-        self.os_var.set(str(row.get("os_months_optional") or ""))
-        self.dfs_var.set(str(row.get("dfs_months_optional") or ""))
-        self.notes_text.delete("1.0", tk.END)
-        self.notes_text.insert(tk.END, row.get("notes_fu") or "")
+        
+        row = dict(row)  # 转换为字典
+        self.current_event_id = event_id
+        
+        # 填充输入框
+        self.event_type_var.set(row.get("event_type") or "")
+        self.event_date_var.set(row.get("event_date") or "")
+        
+        # 解析event_details
+        event_details = row.get("event_details") or ""
+        if "部位:" in event_details:
+            # 提取部位和备注
+            parts = event_details.split("部位:", 1)
+            if len(parts) == 2:
+                site_and_notes = parts[1]
+                if "备注:" in site_and_notes:
+                    site_part, notes_part = site_and_notes.split("备注:", 1)
+                    self.site_var.set(site_part.strip())
+                    self.notes_var.set(notes_part.strip())
+                else:
+                    self.site_var.set(site_and_notes.strip())
+                    self.notes_var.set("")
+            else:
+                self.site_var.set("")
+                self.notes_var.set(event_details)
+        else:
+            self.site_var.set("")
+            self.notes_var.set(event_details)
+        
+        # 触发事件类型变化，显示/隐藏部位字段
+        self._on_event_type_change()
 
-    def clear_form(self) -> None:
-        self.last_visit_var.set("")
-        self.status_var.set("")
-        self.death_var.set("")
-        self.relapse_var.set(0)
-        self.relapse_date_var.set("")
-        self.relapse_site_var.set("")
-        self.os_var.set("")
-        self.dfs_var.set("")
-        self.notes_text.delete("1.0", tk.END)
+    def new_record(self) -> None:
+        """清空输入框，准备新建事件"""
+        self.current_event_id = None
+        self.event_type_var.set("")
+        self.event_date_var.set("")
+        self.site_var.set("")
+        self.notes_var.set("")
+        self._on_event_type_change()
+        # 取消树形视图的选择
+        self.tree.selection_remove(self.tree.selection())
 
     def save_record(self) -> None:
-        if not self.app.current_patient_id:
-            messagebox.showerror("错误", "请先选择或保存患者")
+        """保存随访事件"""
+        # v2.16: 从 app 获取当前患者ID（修复 Bug）
+        if not self.current_patient_id:
+            self.current_patient_id = self.app.current_patient_id
+        
+        if not self.current_patient_id:
+            messagebox.showwarning("警告", "请先选择或创建患者")
             return
-        # Validate dates
-        for name, value in [("最近随访日期", self.last_visit_var.get()), ("死亡日期", self.death_var.get()), ("复发日期", self.relapse_date_var.get())]:
-            if value:
-                ok, msg = validate_date6(value)
-                if not ok:
-                    messagebox.showerror("错误", f"{name}: {msg}")
-                    return
-        data = {
-            "last_visit_date": self.last_visit_var.get() or None,
-            "status": self.status_var.get() or None,
-            "death_date": self.death_var.get() or None,
-            "relapse": self.relapse_var.get(),
-            "relapse_date": self.relapse_date_var.get() or None,
-            "relapse_site": self.relapse_site_var.get() or None,
-            "os_months_optional": float(self.os_var.get()) if self.os_var.get() else None,
-            "dfs_months_optional": float(self.dfs_var.get()) if self.dfs_var.get() else None,
-            "notes_fu": self.notes_text.get("1.0", tk.END).strip() or None,
-        }
+        
+        event_type = self.event_type_var.get().strip()
+        event_date = self.event_date_var.get().strip()
+        
+        if not event_type:
+            messagebox.showwarning("警告", "请选择事件类型")
+            return
+        
+        if not event_date:
+            messagebox.showwarning("警告", "请输入事件日期")
+            return
+        
+        # 构建event_details
+        event_details_parts = []
+        
+        # 如果是复发/转移或进展，需要部位信息
+        if event_type in ["复发/转移", "进展"]:
+            site = self.site_var.get().strip()
+            if site:
+                event_details_parts.append(f"部位:{site}")
+        
+        # 添加备注
+        notes = self.notes_var.get().strip()
+        if notes:
+            event_details_parts.append(f"备注:{notes}")
+        
+        event_details = " ".join(event_details_parts)
+        
         try:
-            self.db.insert_or_update_followup(self.app.current_patient_id, data)
-            messagebox.showinfo("成功", "随访记录已保存")
+            if self.current_event_id:
+                # 更新现有事件
+                # 注意：当前数据库模型没有update_followup_event方法，需要先删除再插入
+                self.db.delete_followup_event(self.current_event_id)
+                event_id = self.db.insert_followup_event(
+                    self.current_patient_id,
+                    event_date,
+                    event_type,
+                    event_details
+                )
+                messagebox.showinfo("成功", "随访事件已更新")
+            else:
+                # 新建事件
+                event_id = self.db.insert_followup_event(
+                    self.current_patient_id,
+                    event_date,
+                    event_type,
+                    event_details
+                )
+                messagebox.showinfo("成功", f"随访事件已创建，ID: {event_id}")
+            
+            # 重新加载患者的所有事件
+            self.load_patient(self.current_patient_id)
+            
+            # 选中刚保存的事件
+            if event_id:
+                try:
+                    self.tree.selection_set(str(event_id))
+                    self.tree.see(str(event_id))
+                except:
+                    pass
+            
         except Exception as e:
-            messagebox.showerror("错误", str(e))
+            messagebox.showerror("错误", f"保存失败: {str(e)}")
 
-    # ----- Wrapper methods for main application -----
-    def save_followup(self) -> None:
-        """
-        保存随访记录的代理方法，便于 main.py 调用。
-        """
-        self.save_record()
+    def delete_record(self) -> None:
+        """删除当前选中的随访事件"""
+        if not self.current_event_id:
+            messagebox.showwarning("警告", "请先选择要删除的事件")
+            return
+        
+        if not messagebox.askyesno("确认", "确定要删除这条随访事件吗？"):
+            return
+        
+        try:
+            self.db.delete_followup_event(self.current_event_id)
+            messagebox.showinfo("成功", "随访事件已删除")
+            
+            # 重新加载患者的所有事件
+            self.load_patient(self.current_patient_id)
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"删除失败: {str(e)}")
+

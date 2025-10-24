@@ -187,8 +187,13 @@ class ThoracicApp:
         btn_frame.pack(fill="x", padx=5, pady=5)
         ttk.Button(btn_frame, text="新建患者", command=self.new_patient).pack(fill="x")
 
-    def refresh_patient_list(self, select_patient_id=None):
-        """刷新患者列表"""
+    def refresh_patient_list(self, select_patient_id=None, reload_data=False):
+        """刷新患者列表
+        
+        Args:
+            select_patient_id: 要选中的患者ID
+            reload_data: 是否重新加载患者数据到所有标签页（默认False，避免递归）
+        """
         # 清空现有列表
         for item in self.patient_tree.get_children():
             self.patient_tree.delete(item)
@@ -225,6 +230,10 @@ class ThoracicApp:
             if select_patient_id and patient_id == select_patient_id:
                 self.patient_tree.selection_set(item_id)
                 self.patient_tree.see(item_id)
+        
+        # v2.14: 只有在reload_data=True时才调用load_patient，避免递归
+        if select_patient_id and reload_data:
+            self.load_patient(select_patient_id)
 
     def filter_patient_list(self):
         """筛选患者列表"""

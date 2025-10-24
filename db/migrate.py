@@ -48,6 +48,22 @@ def migrate_database(db_path):
     if add_column_if_not_exists(conn, "Patient", "adj_radiation", "INTEGER", default=0):
         changes_made = True
     
+    # Patient表新增: 新辅助和辅助治疗日期 (v2.12)
+    if add_column_if_not_exists(conn, "Patient", "nac_date", "TEXT"):
+        changes_made = True
+    if add_column_if_not_exists(conn, "Patient", "adj_date", "TEXT"):
+        changes_made = True
+    
+    # Patient表新增: 抗血管治疗 (v2.13)
+    if add_column_if_not_exists(conn, "Patient", "nac_antiangio", "INTEGER", default=0):
+        changes_made = True
+    if add_column_if_not_exists(conn, "Patient", "nac_antiangio_cycles", "INTEGER"):
+        changes_made = True
+    if add_column_if_not_exists(conn, "Patient", "adj_antiangio", "INTEGER", default=0):
+        changes_made = True
+    if add_column_if_not_exists(conn, "Patient", "adj_antiangio_cycles", "INTEGER"):
+        changes_made = True
+    
     # Pathology表修改
     if add_column_if_not_exists(conn, "Pathology", "airway_spread", "INTEGER"):
         changes_made = True
@@ -55,6 +71,9 @@ def migrate_database(db_path):
         changes_made = True
     # 新增: Pathology表添加肺腺癌主要亚型字段
     if add_column_if_not_exists(conn, "Pathology", "aden_subtype", "TEXT"):
+        changes_made = True
+    # 新增: Pathology表添加病理日期字段 (v2.13)
+    if add_column_if_not_exists(conn, "Pathology", "pathology_date", "TEXT"):
         changes_made = True
     
     # Molecular表新增字段
@@ -67,6 +86,25 @@ def migrate_database(db_path):
     if add_column_if_not_exists(conn, "Surgery", "left_side", "INTEGER", default=0):
         changes_made = True
     if add_column_if_not_exists(conn, "Surgery", "right_side", "INTEGER", default=0):
+        changes_made = True
+    
+    # 创建FollowUpEvent表（v2.1新增）
+    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='FollowUpEvent'")
+    if not cursor.fetchone():
+        print("创建新表: FollowUpEvent")
+        conn.execute("""
+            CREATE TABLE FollowUpEvent (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                patient_id INTEGER NOT NULL,
+                event_date TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                event_details TEXT,
+                FOREIGN KEY (patient_id) REFERENCES Patient(patient_id) ON DELETE CASCADE
+            )
+        """)
+        conn.execute("CREATE INDEX idx_followup_event_patient_id ON FollowUpEvent(patient_id)")
+        conn.execute("CREATE INDEX idx_followup_event_date ON FollowUpEvent(event_date DESC)")
+        conn.commit()
         changes_made = True
     
     conn.close()

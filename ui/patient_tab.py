@@ -296,6 +296,20 @@ class PatientTab(ttk.Frame):
         # 新增放疗勾选框，无周期设置
         self.nac_radiation_var = tk.IntVar()
         ttk.Checkbutton(nac_frame, text="放疗", variable=self.nac_radiation_var).grid(row=nac_row, column=9, sticky="w", padx=5)
+        
+        # 新增：抗血管治疗（在靶向下方）
+        nac_row += 1
+        self.nac_antiangio_var = tk.IntVar()
+        ttk.Checkbutton(nac_frame, text="抗血管", variable=self.nac_antiangio_var).grid(row=nac_row, column=6, sticky="w", padx=5)
+        ttk.Label(nac_frame, text="周期:").grid(row=nac_row, column=7, sticky="e", padx=5)
+        self.nac_antiangio_cycles_var = tk.StringVar()
+        ttk.Entry(nac_frame, textvariable=self.nac_antiangio_cycles_var, width=8).grid(row=nac_row, column=8, sticky="w", padx=5)
+        
+        # 新辅助治疗日期 (yymmdd格式)
+        nac_row += 1
+        ttk.Label(nac_frame, text="治疗日期 (yymmdd):").grid(row=nac_row, column=0, sticky="e", padx=5, pady=3)
+        self.nac_date_var = tk.StringVar()
+        ttk.Entry(nac_frame, textvariable=self.nac_date_var, width=10).grid(row=nac_row, column=1, columnspan=2, sticky="w", padx=5)
 
         # === 辅助治疗区域 ===
         # 文本“术后辅助治疗”改为“辅助治疗”，表示围手术期以外的治疗
@@ -326,6 +340,20 @@ class PatientTab(ttk.Frame):
         # 新增放疗勾选框，无周期设置
         self.adj_radiation_var = tk.IntVar()
         ttk.Checkbutton(adj_frame, text="放疗", variable=self.adj_radiation_var).grid(row=adj_row, column=9, sticky="w", padx=5)
+        
+        # 新增：抗血管治疗（在靶向下方）
+        adj_row += 1
+        self.adj_antiangio_var = tk.IntVar()
+        ttk.Checkbutton(adj_frame, text="抗血管", variable=self.adj_antiangio_var).grid(row=adj_row, column=6, sticky="w", padx=5)
+        ttk.Label(adj_frame, text="周期:").grid(row=adj_row, column=7, sticky="e", padx=5)
+        self.adj_antiangio_cycles_var = tk.StringVar()
+        ttk.Entry(adj_frame, textvariable=self.adj_antiangio_cycles_var, width=8).grid(row=adj_row, column=8, sticky="w", padx=5)
+        
+        # 辅助治疗日期 (yymmdd格式)
+        adj_row += 1
+        ttk.Label(adj_frame, text="治疗日期 (yymmdd):").grid(row=adj_row, column=0, sticky="e", padx=5, pady=3)
+        self.adj_date_var = tk.StringVar()
+        ttk.Entry(adj_frame, textvariable=self.adj_date_var, width=10).grid(row=adj_row, column=1, columnspan=2, sticky="w", padx=5)
 
         # === 按钮区域 ===
         btn_frame = ttk.Frame(scrollable_frame)
@@ -628,6 +656,11 @@ class PatientTab(ttk.Frame):
             "nac_targeted_cycles": int(self.nac_targeted_cycles_var.get()) if self.nac_targeted_cycles_var.get().strip() else None,
             # 新辅助放疗勾选
             "nac_radiation": self.nac_radiation_var.get(),
+            # 新辅助抗血管治疗
+            "nac_antiangio": self.nac_antiangio_var.get(),
+            "nac_antiangio_cycles": int(self.nac_antiangio_cycles_var.get()) if self.nac_antiangio_cycles_var.get().strip() else None,
+            # 新辅助治疗日期
+            "nac_date": self.nac_date_var.get() or None,
             "adj_chemo": self.adj_chemo_var.get(),
             "adj_chemo_cycles": int(self.adj_chemo_cycles_var.get()) if self.adj_chemo_cycles_var.get().strip() else None,
             "adj_immuno": self.adj_immuno_var.get(),
@@ -636,6 +669,11 @@ class PatientTab(ttk.Frame):
             "adj_targeted_cycles": int(self.adj_targeted_cycles_var.get()) if self.adj_targeted_cycles_var.get().strip() else None,
             # 辅助放疗勾选
             "adj_radiation": self.adj_radiation_var.get(),
+            # 辅助抗血管治疗
+            "adj_antiangio": self.adj_antiangio_var.get(),
+            "adj_antiangio_cycles": int(self.adj_antiangio_cycles_var.get()) if self.adj_antiangio_cycles_var.get().strip() else None,
+            # 辅助治疗日期
+            "adj_date": self.adj_date_var.get() or None,
             "notes_patient": self.notes_patient_var.get() or None,
             # 家族恶性肿瘤史
             "family_history": self.family_history_var.get(),
@@ -694,6 +732,11 @@ class PatientTab(ttk.Frame):
         self.nac_targeted_cycles_var.set(patient_dict.get("nac_targeted_cycles", ""))
         # 新辅助放疗
         self.nac_radiation_var.set(patient_dict.get("nac_radiation", 0))
+        # 新辅助抗血管治疗
+        self.nac_antiangio_var.set(patient_dict.get("nac_antiangio", 0))
+        self.nac_antiangio_cycles_var.set(patient_dict.get("nac_antiangio_cycles", ""))
+        # 新辅助治疗日期
+        self.nac_date_var.set(patient_dict.get("nac_date", ""))
         
         self.adj_chemo_var.set(patient_dict.get("adj_chemo", 0))
         self.adj_chemo_cycles_var.set(patient_dict.get("adj_chemo_cycles", ""))
@@ -703,6 +746,11 @@ class PatientTab(ttk.Frame):
         self.adj_targeted_cycles_var.set(patient_dict.get("adj_targeted_cycles", ""))
         # 辅助放疗
         self.adj_radiation_var.set(patient_dict.get("adj_radiation", 0))
+        # 辅助抗血管治疗
+        self.adj_antiangio_var.set(patient_dict.get("adj_antiangio", 0))
+        self.adj_antiangio_cycles_var.set(patient_dict.get("adj_antiangio_cycles", ""))
+        # 辅助治疗日期
+        self.adj_date_var.set(patient_dict.get("adj_date", ""))
         
         self.notes_patient_var.set(patient_dict.get("notes_patient", ""))
         
@@ -744,6 +792,9 @@ class PatientTab(ttk.Frame):
         self.nac_targeted_var.set(0)
         self.nac_targeted_cycles_var.set("")
         self.nac_radiation_var.set(0)
+        self.nac_antiangio_var.set(0)
+        self.nac_antiangio_cycles_var.set("")
+        self.nac_date_var.set("")
         
         self.adj_chemo_var.set(0)
         self.adj_chemo_cycles_var.set("")
@@ -752,6 +803,9 @@ class PatientTab(ttk.Frame):
         self.adj_targeted_var.set(0)
         self.adj_targeted_cycles_var.set("")
         self.adj_radiation_var.set(0)
+        self.adj_antiangio_var.set(0)
+        self.adj_antiangio_cycles_var.set("")
+        self.adj_date_var.set("")
         
         self.notes_patient_var.set("")
         

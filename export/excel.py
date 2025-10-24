@@ -120,7 +120,9 @@ def _write_sheet(wb: Workbook, sheet_name: str, rows: Iterable[dict]) -> None:
         header = list(rows_list[0].keys())
         ws.append(header)
         for row in rows_list:
-            ws.append([row.get(col) for col in header])
+            # Convert sqlite3.Row to dict to support .get() method
+            row_dict = dict(row)
+            ws.append([row_dict.get(col) for col in header])
     except Exception as e:
         print(f"Error: Failed to write sheet {sheet_name}: {e}")
         raise
@@ -133,7 +135,7 @@ def export_patient_to_excel(db: Database, patient_id: int, file_path: Path) -> N
         # Remove the default sheet created by openpyxl
         wb.remove(wb.active)
         # Fetch rows per table
-        tables = ["Patient", "Surgery", "Pathology", "Molecular", "FollowUp"]
+        tables = ["Patient", "Surgery", "Pathology", "Molecular", "FollowUpEvent"]
         # Fetch the patient once to obtain hospital_id.  Convert sqlite3.Row to dict
         patient_row = db.get_patient_by_id(patient_id)
         
@@ -154,15 +156,6 @@ def export_patient_to_excel(db: Database, patient_id: int, file_path: Path) -> N
             try:
                 if table == "Patient":
                     rows = patient_dict_list
-                elif table == "FollowUp":
-                    row = db.get_followup(patient_id)
-                    if row:
-                        rdict = dict(row)
-                        if hospital_id is not None:
-                            rdict = {"hospital_id": hospital_id, **rdict}
-                        rows = [rdict]
-                    else:
-                        rows = []
                 else:
                     # Many-to-one tables
                     if table == "Surgery":
@@ -208,7 +201,7 @@ def export_all_to_excel(db: Database, file_path: Path) -> None:
             pat_map[rdict.get("patient_id")] = rdict.get("hospital_id")
         
         # For each table, fetch all rows and attach hospital_id for non-Patient tables
-        for table in ["Patient", "Surgery", "Pathology", "Molecular", "FollowUp"]:
+        for table in ["Patient", "Surgery", "Pathology", "Molecular", "FollowUpEvent"]:
             try:
                 rows = db.export_table(table)
                 rows_dicts: List[dict] = []
