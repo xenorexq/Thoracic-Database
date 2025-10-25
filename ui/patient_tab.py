@@ -39,7 +39,7 @@ class PatientTab(ttk.Frame):
         """将嵌入的 Markdown 简单转换为 HTML，当前主要处理粗体标记。"""
         if not content:
             return ""
-        return re.sub(r"\*\*(.+?)\*\*", r"<strong>\\1</strong>", content)
+        return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", content)
 
     def _build_widgets(self) -> None:
         # 创建一个水平分隔窗口，使左侧表单和右侧 AJCC 参考区宽度可调
