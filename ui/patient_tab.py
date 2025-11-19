@@ -11,7 +11,12 @@ from tkinter import ttk, messagebox
 from typing import Optional, Dict
 
 from db.models import Database
-from utils.validators import validate_birth_ym6, format_birth_ym6, validate_date6
+from utils.validators import (
+    validate_birth_ym6,
+    format_birth_ym6,
+    validate_date6,
+    validate_hospital_id,
+)
 # 已弃用 TNM 分期映射功能，不再导入 get_lung_stage/get_eso_stage
 from tkhtmlview import HTMLScrolledText
 
@@ -632,8 +637,10 @@ class PatientTab(ttk.Frame):
         cancer_type = self.cancer_var.get()
         sex = self.sex_var.get()
 
-        if not hospital_id:
-            messagebox.showerror("错误", "住院号为必填项")
+        # 使用通用验证器验证住院号
+        ok, msg = validate_hospital_id(hospital_id)
+        if not ok:
+            messagebox.showerror("错误", msg)
             return
         if not cancer_type:
             messagebox.showerror("错误", "癌种为必填项")

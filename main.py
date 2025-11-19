@@ -18,6 +18,8 @@ from ui.path_tab import PathologyTab
 from ui.mol_tab import MolecularTab
 from ui.fu_tab import FollowUpTab
 from ui.export_tab import ExportTab
+from db.importer import import_databases  # 用于后台数据库合并
+import threading  # 用于后台线程导入
 from staging.lookup import load_mapping_from_csv
 from db.migrate import migrate_database
 
@@ -359,139 +361,94 @@ class ThoracicApp:
         self.status_var.set(text)
     
     def import_database(self):
-        """导入其他数据库"""
+        """导入其他数据库并合并新患者数据。
+
+        此功能允许从一个或多个 SQLite 数据库文件中批量导入患者及其所有关联记录。
+        导入逻辑仅以患者表 (`Patient`) 的 `hospital_id` 作为唯一标识，
+        只有当源库中的住院号在当前数据库不存在时才会导入。
+        对于已存在的患者，源库中的手术、病理、分子及随访记录都将被忽略，
+        以保护当前库中经过编辑或补充的数据。
+        所有耗时的导入操作在后台线程中执行，避免阻塞用户界面。
+        """
         from tkinter import filedialog
-        import sqlite3
-        import shutil
-        
-        # 选择要导入的数据库文件
-        source_db = filedialog.askopenfilename(
+        source_dbs = filedialog.askopenfilenames(
             title="选择要导入的数据库文件",
-            filetypes=[("SQLite数据库", "*.db"), ("所有文件", "*.*")]
+            filetypes=[("SQLite数据库", "*.db"), ("所有文件", "*.*")],
         )
-        
-        if not source_db:
+        if not source_dbs:
             return
-        
-        try:
-            # 连接源数据库
-            source_conn = sqlite3.connect(source_db)
-            source_conn.row_factory = sqlite3.Row
-            
-            # 获取所有表的数据
-            tables = ['Patient', 'Surgery', 'Pathology', 'Molecular', 'FollowUp']
-            imported_counts = {}
-            
-            for table in tables:
+
+        def run_import(paths):
+            """在后台线程中执行导入逻辑。
+
+            注意：SQLite 连接不能跨线程复用，因此这里在工作线程中
+            单独打开一个新的 Database 实例（指向同一个 db_path），导入完成
+            后再关闭连接，只通过 Tk 的 ``after`` 回到主线程更新界面。
+            """
+
+            from db.models import Database  # 局部导入以避免循环依赖
+
+            # 在主线程中更新状态栏
+            self.root.after(0, lambda: self.status("正在导入，请稍候..."))
+
+            try:
+                # 在当前线程重新打开一个数据库连接
+                dest_path = getattr(self.db, "db_path", None)
+                thread_db = Database(dest_path)
                 try:
-                    cursor = source_conn.execute(f"SELECT * FROM {table}")
-                    rows = cursor.fetchall()
-                    imported_counts[table] = 0
-                    
-                    for row in rows:
-                        row_dict = dict(row)
-                        
-                        # 根据表类型导入
-                        if table == 'Patient':
-                            # 检查是否已存在（根据住院号）
-                            existing = self.db.conn.execute(
-                                "SELECT patient_id FROM Patient WHERE admission_no=?",
-                                (row_dict.get('admission_no'),)
-                            ).fetchone()
-                            
-                            if not existing:
-                                # 移除patient_id让数据库自动生成
-                                if 'patient_id' in row_dict:
-                                    del row_dict['patient_id']
-                                self.db.insert_patient(row_dict)
-                                imported_counts[table] += 1
-                        
-                        elif table == 'Surgery':
-                            # 检查patient_id是否存在
-                            patient_id = row_dict.get('patient_id')
-                            if patient_id:
-                                existing_patient = self.db.conn.execute(
-                                    "SELECT patient_id FROM Patient WHERE patient_id=?",
-                                    (patient_id,)
-                                ).fetchone()
-                                if existing_patient:
-                                    if 'surgery_id' in row_dict:
-                                        del row_dict['surgery_id']
-                                    self.db.insert_surgery(row_dict)
-                                    imported_counts[table] += 1
-                        
-                        elif table == 'Pathology':
-                            patient_id = row_dict.get('patient_id')
-                            if patient_id:
-                                existing_patient = self.db.conn.execute(
-                                    "SELECT patient_id FROM Patient WHERE patient_id=?",
-                                    (patient_id,)
-                                ).fetchone()
-                                if existing_patient:
-                                    if 'path_id' in row_dict:
-                                        del row_dict['path_id']
-                                    self.db.insert_pathology(row_dict)
-                                    imported_counts[table] += 1
-                        
-                        elif table == 'Molecular':
-                            patient_id = row_dict.get('patient_id')
-                            if patient_id:
-                                existing_patient = self.db.conn.execute(
-                                    "SELECT patient_id FROM Patient WHERE patient_id=?",
-                                    (patient_id,)
-                                ).fetchone()
-                                if existing_patient:
-                                    if 'mol_id' in row_dict:
-                                        del row_dict['mol_id']
-                                    self.db.insert_molecular(row_dict)
-                                    imported_counts[table] += 1
-                        
-                        elif table == 'FollowUp':
-                            patient_id = row_dict.get('patient_id')
-                            if patient_id:
-                                existing_patient = self.db.conn.execute(
-                                    "SELECT patient_id FROM Patient WHERE patient_id=?",
-                                    (patient_id,)
-                                ).fetchone()
-                                if existing_patient:
-                                    # FollowUp使用upsert
-                                    self.db.upsert_followup(row_dict)
-                                    imported_counts[table] += 1
-                
-                except sqlite3.Error as e:
-                    print(f"跳过表 {table}: {e}")
-            
-            source_conn.close()
-            
-            # 显示导入结果
-            summary = "\n".join([f"{table}: {count}条" for table, count in imported_counts.items() if count > 0])
-            if summary:
-                messagebox.showinfo("导入成功", f"已成功导入以下数据：\n\n{summary}\n\n请刷新患者列表查看。")
-                self.refresh_patient_list()
-            else:
-                messagebox.showinfo("导入完成", "未找到新数据或所有数据已存在。")
-            
-            self.status("数据库导入完成")
-        
-        except Exception as e:
-            messagebox.showerror("导入错误", f"导入数据库时出错：\n{str(e)}")
-            self.status("导入失败")
+                    stats = import_databases(thread_db, paths)
+                finally:
+                    # 确保工作线程的连接被关闭
+                    try:
+                        thread_db.conn.close()
+                    except Exception:
+                        pass
+
+                # 回到主线程显示结果
+                def finish():
+                    if any(stats.values()):
+                        lines = [f"{tbl}: {cnt} 条" for tbl, cnt in stats.items() if cnt > 0]
+                        summary = "\n".join(lines)
+                        messagebox.showinfo(
+                            "导入完成",
+                            f"已成功导入以下数据：\n\n{summary}\n\n请刷新患者列表查看。",
+                        )
+                        self.refresh_patient_list()
+                    else:
+                        messagebox.showinfo("导入完成", "未找到新数据或所有数据已存在。")
+                    self.status("数据库导入完成")
+
+                self.root.after(0, finish)
+
+            except Exception as e:
+                # 报错信息在主线程弹框
+                def show_err():
+                    messagebox.showerror("导入错误", f"导入过程中出错：\n{e}")
+                    self.status("导入失败")
+
+                self.root.after(0, show_err)
+
+        # 启动后台线程
+        threading.Thread(target=run_import, args=(source_dbs,), daemon=True).start()
     
     def show_about(self):
         """显示关于对话框"""
 
         about_text = """胸外科科研数据录入系统
 
-版本：v3.0
+版本：v3.2
 
 功能特点：
 • 患者信息管理（肺癌/食管癌）
 • 手术记录管理
 • 病理报告管理
 • 分子检测管理
-• 随访数据管理
+• 随访数据管理（事件驱动）
 • 数据导出（Excel/CSV）
-• 数据库导入功能
+• 数据库导入：可以一次选择多个 SQLite 数据库导入新患者，按住院号合并新患者数据并统计导入结果，导入过程在后台线程执行
+• 模块化设计：导入逻辑抽离为独立模块，便于维护
+• 输入校验：新增住院号格式和日期格式验证，减少录入错误
+• 错误日志：导入过程中出现的错误会记录到 importer.log 文件，方便排查问题
 
 开发者信息：
 GitHub: xenorexq
