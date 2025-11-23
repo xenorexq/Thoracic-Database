@@ -9,6 +9,8 @@ sys.path.insert(0, str(BASE_DIR))  # 关键:把项目根加入模块搜索路径
 
 import tkinter as tk
 from tkinter import ttk, messagebox
+import ttkbootstrap as tb
+from ttkbootstrap.constants import *
 
 # 下面全部用"绝对导入"（不带.或..）
 from db.models import Database
