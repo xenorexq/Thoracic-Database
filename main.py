@@ -371,14 +371,7 @@ class ThoracicApp:
         self.status_var.set(text)
     
     def import_database(self):
-        """导入其他数据库并合并新患者数据
-
-        此功能允许从一个或多个 SQLite 数据库文件中批量导入患者及其所有关联记录。
-        导入逻辑仅以患者表 (`Patient`) 的 `hospital_id` 作为唯一标识，
-        只有当源库中的住院号在当前数据库不存在时才会导入。
-        对于已存在的患者，源库中的手术、病理、分子及随访记录都将被忽略，
-        以保护当前库中经过编辑或补充的数据。
-        """
+        """导入其他数据库并合并新患者数据 (多线程 + 事务批量提交版)"""
         from tkinter import filedialog
         import sqlite3
 
@@ -391,198 +384,206 @@ class ThoracicApp:
         if not source_dbs:
             return
 
-        # 构建当前数据库已存在的 hospital_id 集合
-        dest_ids = set(
-            row[0]
-            for row in self.db.conn.execute("SELECT hospital_id FROM Patient").fetchall()
-            if row[0]
-        )
-
-        total_imports = {
-            "Patient": 0,
-            "Surgery": 0,
-            "Pathology": 0,
-            "Molecular": 0,
-            "FollowUpEvent": 0,
-        }
-
-        for source_db in source_dbs:
+        # 准备在后台线程中运行
+        def run_import():
+            self.root.after(0, lambda: self.show_progress(True))
+            self.root.after(0, lambda: self.status("正在准备导入..."))
+            
             try:
-                src_conn = sqlite3.connect(source_db)
-                src_conn.row_factory = sqlite3.Row
+                # 构建当前数据库已存在的 hospital_id 集合
+                dest_ids = set(
+                    row[0]
+                    for row in self.db.conn.execute("SELECT hospital_id FROM Patient").fetchall()
+                    if row[0]
+                )
 
-                # 获取所有患者
-                cursor = src_conn.execute("SELECT * FROM Patient")
-                patient_rows = cursor.fetchall()
+                total_imports = {
+                    "Patient": 0,
+                    "Surgery": 0,
+                    "Pathology": 0,
+                    "Molecular": 0,
+                    "FollowUpEvent": 0,
+                }
 
-                # 映射：源 patient_id -> 目标 patient_id
-                id_map = {}
-
-                # 第一阶段：导入新患者并建立映射
-                for row in patient_rows:
-                    hospital_id = row["hospital_id"]
-                    if not hospital_id or hospital_id in dest_ids:
-                        continue
-                    patient_data = dict(row)
-                    patient_data.pop("patient_id", None)
-                    new_pid = self.db.insert_patient(patient_data)
-                    dest_ids.add(hospital_id)
-                    id_map[row["patient_id"]] = new_pid
-                    total_imports["Patient"] += 1
-
-                # 如果没有新患者则不必处理子表
-                if id_map:
-                    # 获取新患者源ID列表字符串用于IN语句
-                    src_ids_list = ",".join(str(pid) for pid in id_map.keys())
-
-                    # 导入 Surgery
+                db_count = len(source_dbs)
+                for idx, source_db in enumerate(source_dbs):
+                    db_name = Path(source_db).name
+                    self.root.after(0, lambda m=f"正在导入 ({idx+1}/{db_count}): {db_name}": self.status(m))
+                    
                     try:
-                        cur_surg = src_conn.execute(
-                            f"SELECT * FROM Surgery WHERE patient_id IN ({src_ids_list})"
-                        )
-                        for srow in cur_surg:
-                            src_pid = srow["patient_id"]
-                            dest_pid = id_map.get(src_pid)
-                            if not dest_pid:
+                        src_conn = sqlite3.connect(source_db)
+                        src_conn.row_factory = sqlite3.Row
+
+                        # 获取所有患者
+                        cursor = src_conn.execute("SELECT * FROM Patient")
+                        patient_rows = cursor.fetchall()
+                        
+                        total_pats = len(patient_rows)
+                        
+                        # 映射：源 patient_id -> 目标 patient_id
+                        id_map = {}
+
+                        # 第一阶段：导入新患者并建立映射
+                        # 使用事务：不在此处 commit，最后统一 commit
+                        for i, row in enumerate(patient_rows):
+                            if i % 50 == 0: # 每50条更新一次进度条
+                                progress_val = (i / total_pats) * 100
+                                self.root.after(0, lambda v=progress_val: self.update_progress(v))
+                                
+                            hospital_id = row["hospital_id"]
+                            if not hospital_id or hospital_id in dest_ids:
                                 continue
-                            surgery_data = dict(srow)
-                            surgery_data.pop("surgery_id", None)
-                            surgery_data.pop("patient_id", None)
-                            self.db.insert_surgery(dest_pid, surgery_data)
-                            total_imports["Surgery"] += 1
-                    except sqlite3.Error:
-                        pass
+                            patient_data = dict(row)
+                            patient_data.pop("patient_id", None)
+                            # insert_patient now supports commit=False
+                            new_pid = self.db.insert_patient(patient_data, commit=False)
+                            dest_ids.add(hospital_id)
+                            id_map[row["patient_id"]] = new_pid
+                            total_imports["Patient"] += 1
 
-                    # 导入 Pathology
-                    try:
-                        cur_path = src_conn.execute(
-                            f"SELECT * FROM Pathology WHERE patient_id IN ({src_ids_list})"
-                        )
-                        for prow in cur_path:
-                            src_pid = prow["patient_id"]
-                            dest_pid = id_map.get(src_pid)
-                            if not dest_pid:
-                                continue
-                            path_data = dict(prow)
-                            path_data.pop("path_id", None)
-                            path_data.pop("patient_id", None)
-                            self.db.insert_pathology(dest_pid, path_data)
-                            total_imports["Pathology"] += 1
-                    except sqlite3.Error:
-                        pass
-
-                    # 导入 Molecular
-                    try:
-                        cur_mol = src_conn.execute(
-                            f"SELECT * FROM Molecular WHERE patient_id IN ({src_ids_list})"
-                        )
-                        for mrow in cur_mol:
-                            src_pid = mrow["patient_id"]
-                            dest_pid = id_map.get(src_pid)
-                            if not dest_pid:
-                                continue
-                            mol_data = dict(mrow)
-                            mol_data.pop("mol_id", None)
-                            mol_data.pop("patient_id", None)
-                            self.db.insert_molecular(dest_pid, mol_data)
-                            total_imports["Molecular"] += 1
-                    except sqlite3.Error:
-                        pass
-
-                    # 导入 FollowUpEvent
-                    try:
-                        cur_fue = src_conn.execute(
-                            f"SELECT * FROM FollowUpEvent WHERE patient_id IN ({src_ids_list})"
-                        )
-                        for evrow in cur_fue:
-                            try:
-                                src_pid = evrow["patient_id"]
-                                dest_pid = id_map.get(src_pid)
-                                if not dest_pid:
-                                    continue
-                                event_date = evrow["event_date"]
-                                event_type = evrow["event_type"]
-                                event_details = evrow.get("event_details", "")
-                                # v3.5.1: 忽略源 event_code，让系统自动生成新编码，避免冲突
-                                self.db.insert_followup_event(dest_pid, event_date, event_type, event_details, event_code=None)
-                                total_imports["FollowUpEvent"] += 1
-                            except sqlite3.Error:
-                                pass
-                    except sqlite3.Error:
-                        # v3.5.2: 如果没有 FollowUpEvent 表，尝试从旧版 FollowUp 表导入
-                        try:
-                            cur_fu = src_conn.execute(
-                                f"SELECT * FROM FollowUp WHERE patient_id IN ({src_ids_list})"
-                            )
-                            for furow in cur_fu:
+                        # 如果没有新患者则不必处理子表
+                        if id_map:
+                            # 获取新患者源ID列表字符串用于IN语句
+                            # 优化：如果是 huge list，SQLite IN limit 是 999。
+                            # 分批处理 IN 查询
+                            src_ids_all = list(id_map.keys())
+                            chunk_size = 500
+                            
+                            for k in range(0, len(src_ids_all), chunk_size):
+                                chunk = src_ids_all[k:k+chunk_size]
+                                src_ids_list = ",".join(str(pid) for pid in chunk)
+                                
+                                # 导入 Surgery
                                 try:
-                                    src_pid = furow["patient_id"]
-                                    dest_pid = id_map.get(src_pid)
-                                    if not dest_pid:
-                                        continue
-                                    
-                                    # 转换旧版字段
-                                    last_visit = furow["last_visit_date"]
-                                    status = furow["status"]
-                                    death_date = furow["death_date"]
-                                    notes = furow["notes_fu"] or ""
-                                    
-                                    # 1. 如果有死亡日期，创建死亡事件
-                                    if death_date:
-                                        self.db.insert_followup_event(dest_pid, death_date, "死亡", f"旧版数据导入; {notes}", event_code=None)
+                                    cur_surg = src_conn.execute(
+                                        f"SELECT * FROM Surgery WHERE patient_id IN ({src_ids_list})"
+                                    )
+                                    for srow in cur_surg:
+                                        src_pid = srow["patient_id"]
+                                        dest_pid = id_map.get(src_pid)
+                                        if not dest_pid: continue
+                                        surgery_data = dict(srow)
+                                        surgery_data.pop("surgery_id", None)
+                                        surgery_data.pop("patient_id", None)
+                                        self.db.insert_surgery(dest_pid, surgery_data, commit=False)
+                                        total_imports["Surgery"] += 1
+                                except sqlite3.Error: pass
+
+                                # 导入 Pathology
+                                try:
+                                    cur_path = src_conn.execute(
+                                        f"SELECT * FROM Pathology WHERE patient_id IN ({src_ids_list})"
+                                    )
+                                    for prow in cur_path:
+                                        src_pid = prow["patient_id"]
+                                        dest_pid = id_map.get(src_pid)
+                                        if not dest_pid: continue
+                                        path_data = dict(prow)
+                                        path_data.pop("path_id", None)
+                                        path_data.pop("patient_id", None)
+                                        self.db.insert_pathology(dest_pid, path_data, commit=False)
+                                        total_imports["Pathology"] += 1
+                                except sqlite3.Error: pass
+
+                                # 导入 Molecular
+                                try:
+                                    cur_mol = src_conn.execute(
+                                        f"SELECT * FROM Molecular WHERE patient_id IN ({src_ids_list})"
+                                    )
+                                    for mrow in cur_mol:
+                                        src_pid = mrow["patient_id"]
+                                        dest_pid = id_map.get(src_pid)
+                                        if not dest_pid: continue
+                                        mol_data = dict(mrow)
+                                        mol_data.pop("mol_id", None)
+                                        mol_data.pop("patient_id", None)
+                                        self.db.insert_molecular(dest_pid, mol_data, commit=False)
+                                        total_imports["Molecular"] += 1
+                                except sqlite3.Error: pass
+
+                                # 导入 FollowUpEvent
+                                try:
+                                    cur_fue = src_conn.execute(
+                                        f"SELECT * FROM FollowUpEvent WHERE patient_id IN ({src_ids_list})"
+                                    )
+                                    for evrow in cur_fue:
+                                        src_pid = evrow["patient_id"]
+                                        dest_pid = id_map.get(src_pid)
+                                        if not dest_pid: continue
+                                        event_date = evrow["event_date"]
+                                        event_type = evrow["event_type"]
+                                        event_details = evrow.get("event_details", "")
+                                        self.db.insert_followup_event(dest_pid, event_date, event_type, event_details, event_code=None, commit=False)
                                         total_imports["FollowUpEvent"] += 1
-                                    
-                                    # 2. 如果有末次随访日期，创建相应事件
-                                    if last_visit:
-                                        # 如果状态是死亡且日期相同，可能已在上面处理过，但为了保险起见，
-                                        # 如果日期不同或者是其他状态，则创建新记录
-                                        if last_visit != death_date:
-                                            # 确定事件类型
+                                except sqlite3.Error: pass
+                                
+                                # 尝试导入旧版 FollowUp (兼容性)
+                                try:
+                                    cur_fu = src_conn.execute(
+                                        f"SELECT * FROM FollowUp WHERE patient_id IN ({src_ids_list})"
+                                    )
+                                    for furow in cur_fu:
+                                        src_pid = furow["patient_id"]
+                                        dest_pid = id_map.get(src_pid)
+                                        if not dest_pid: continue
+                                        last_visit = furow["last_visit_date"]
+                                        status = furow["status"]
+                                        death_date = furow["death_date"]
+                                        notes = furow["notes_fu"] or ""
+                                        if death_date:
+                                            self.db.insert_followup_event(dest_pid, death_date, "死亡", f"旧版数据导入; {notes}", event_code=None, commit=False)
+                                            total_imports["FollowUpEvent"] += 1
+                                        if last_visit and last_visit != death_date:
                                             ev_type = "生存"
                                             if status and "死亡" in status:
-                                                # 如果已经有 death_date 且日期不同，可能是一次复查
                                                 ev_type = "失访" if "失访" in status else "生存"
                                             elif status and "失访" in status:
                                                 ev_type = "失访"
-                                            
                                             detail_text = f"旧版数据导入 (状态:{status}); {notes}"
-                                            self.db.insert_followup_event(dest_pid, last_visit, ev_type, detail_text, event_code=None)
+                                            self.db.insert_followup_event(dest_pid, last_visit, ev_type, detail_text, event_code=None, commit=False)
                                             total_imports["FollowUpEvent"] += 1
-                                except sqlite3.Error:
-                                    pass
-                        except sqlite3.Error:
-                            pass
+                                except sqlite3.Error: pass
 
-                src_conn.close()
+                        src_conn.close()
+                    except Exception as e:
+                        self.root.after(0, lambda err=str(e): messagebox.showerror("导入错误", f"导入 {source_db} 时出错：\n{err}"))
+                        continue
+
+                # 所有文件处理完毕，执行一次性提交
+                self.root.after(0, lambda: self.status("正在写入磁盘..."))
+                self.db.commit() # CRITICAL: Commit transaction
+                
+                # UI 反馈
+                def on_complete():
+                    self.show_progress(False)
+                    self.status("数据库导入完成")
+                    if any(total_imports.values()):
+                        summary_lines = []
+                        for table, count in total_imports.items():
+                            if count > 0:
+                                summary_lines.append(f"{table}: {count} 条")
+                        summary_text = "\n".join(summary_lines)
+                        messagebox.showinfo("导入完成", f"已成功导入：\n\n{summary_text}\n\n请刷新患者列表。")
+                        self.refresh_patient_list()
+                    else:
+                        messagebox.showinfo("导入完成", "未找到新数据或所有数据已存在。")
+                        
+                self.root.after(0, on_complete)
+
             except Exception as e:
-                # 捕获每个文件的导入异常，但继续处理其他文件
-                messagebox.showerror("导入错误", f"导入 {source_db} 时出错：\n{str(e)}")
-                continue
+                self.root.after(0, lambda: self.show_progress(False))
+                self.root.after(0, lambda err=str(e): messagebox.showerror("严重错误", f"导入过程中发生严重错误：\n{err}"))
 
-        # 显示导入结果
-        if any(total_imports.values()):
-            summary_lines = []
-            for table, count in total_imports.items():
-                if count > 0:
-                    summary_lines.append(f"{table}: {count} 条")
-            summary_text = "\n".join(summary_lines)
-            messagebox.showinfo(
-                "导入完成",
-                f"已成功导入以下数据：\n\n{summary_text}\n\n请刷新患者列表查看。"
-            )
-            self.refresh_patient_list()
-        else:
-            messagebox.showinfo("导入完成", "未找到新数据或所有数据已存在。")
-        
-        self.status("数据库导入完成")
+        # 启动线程
+        threading.Thread(target=run_import, daemon=True).start()
     
     def show_about(self):
         """显示关于对话框"""
 
-        # 更新关于信息至 v3.5.2
+        # 更新关于信息至 v3.5.4
         about_text = (
             "胸外科科研数据录入系统\n\n"
-            "版本：v3.5.2\n\n"
+            "版本：v3.5.4\n\n"
             "功能特点：\n"
             "• 全流程患者数据管理（肺癌/食管癌）\n"
             "• 手术、病理、分子检测、随访等标签页均支持标准的新增/修改/删除，\n"
@@ -601,7 +602,10 @@ class ThoracicApp:
 
 
 def main():
-    root = tk.Tk()
+    # 使用 ttkbootstrap 替换标准 Tk，应用现代化主题
+    # themename 可选: cosmo, flatly, journal, litera, lumen, minty, pulse, sandstone, united, yeti (Light themes)
+    # 或: cyborg, darkly, solar, superhero (Dark themes)
+    root = tb.Window(themename="cosmo")
     app = ThoracicApp(root)
     root.mainloop()
 

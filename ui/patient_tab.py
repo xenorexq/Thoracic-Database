@@ -785,39 +785,39 @@ class PatientTab(ttk.Frame):
         self.eso_hist_var.set(patient_dict.get("eso_histology", ""))
         self.eso_grade_var.set(patient_dict.get("eso_grade", ""))
         self.eso_loc_var.set(patient_dict.get("eso_location", ""))
-        self.eso_from_incisors_var.set(patient_dict.get("eso_from_incisors_cm", ""))
+        self.eso_from_incisors_var.set(patient_dict.get("eso_from_incisors_cm") or "")
         
         self.nac_chemo_var.set(patient_dict.get("nac_chemo", 0))
-        self.nac_chemo_cycles_var.set(patient_dict.get("nac_chemo_cycles", ""))
+        self.nac_chemo_cycles_var.set(patient_dict.get("nac_chemo_cycles") or "")
         self.nac_immuno_var.set(patient_dict.get("nac_immuno", 0))
-        self.nac_immuno_cycles_var.set(patient_dict.get("nac_immuno_cycles", ""))
+        self.nac_immuno_cycles_var.set(patient_dict.get("nac_immuno_cycles") or "")
         self.nac_targeted_var.set(patient_dict.get("nac_targeted", 0))
-        self.nac_targeted_cycles_var.set(patient_dict.get("nac_targeted_cycles", ""))
+        self.nac_targeted_cycles_var.set(patient_dict.get("nac_targeted_cycles") or "")
         # 新辅助放疗
         self.nac_radiation_var.set(patient_dict.get("nac_radiation", 0))
         # 新辅助抗血管治疗
         self.nac_antiangio_var.set(patient_dict.get("nac_antiangio", 0))
-        self.nac_antiangio_cycles_var.set(patient_dict.get("nac_antiangio_cycles", ""))
+        self.nac_antiangio_cycles_var.set(patient_dict.get("nac_antiangio_cycles") or "")
         # 新辅助治疗日期
-        self.nac_date_var.set(patient_dict.get("nac_date", ""))
+        self.nac_date_var.set(patient_dict.get("nac_date") or "")
         
         self.adj_chemo_var.set(patient_dict.get("adj_chemo", 0))
-        self.adj_chemo_cycles_var.set(patient_dict.get("adj_chemo_cycles", ""))
+        self.adj_chemo_cycles_var.set(patient_dict.get("adj_chemo_cycles") or "")
         self.adj_immuno_var.set(patient_dict.get("adj_immuno", 0))
-        self.adj_immuno_cycles_var.set(patient_dict.get("adj_immuno_cycles", ""))
+        self.adj_immuno_cycles_var.set(patient_dict.get("adj_immuno_cycles") or "")
         self.adj_targeted_var.set(patient_dict.get("adj_targeted", 0))
-        self.adj_targeted_cycles_var.set(patient_dict.get("adj_targeted_cycles", ""))
+        self.adj_targeted_cycles_var.set(patient_dict.get("adj_targeted_cycles") or "")
         # 辅助放疗
         self.adj_radiation_var.set(patient_dict.get("adj_radiation", 0))
         # 辅助抗血管治疗
         self.adj_antiangio_var.set(patient_dict.get("adj_antiangio", 0))
-        self.adj_antiangio_cycles_var.set(patient_dict.get("adj_antiangio_cycles", ""))
+        self.adj_antiangio_cycles_var.set(patient_dict.get("adj_antiangio_cycles") or "")
         # 辅助治疗日期
-        self.adj_date_var.set(patient_dict.get("adj_date", ""))
+        self.adj_date_var.set(patient_dict.get("adj_date") or "")
         
-        self.notes_patient_var.set(patient_dict.get("notes_patient", ""))
+        self.notes_patient_var.set(patient_dict.get("notes_patient") or "")
         
-        # 触发癌种改变事件
+        # 触发癌种变改事件
         cancer_type = patient_dict.get("cancer_type", "")
         if cancer_type:
             self.on_cancer_type_change(cancer_type)

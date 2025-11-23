@@ -289,13 +289,14 @@ class Database:
         self.conn.close()
 
     # ------------------ Patient operations ------------------
-    def insert_patient(self, data: Dict[str, Any]) -> int:
+    def insert_patient(self, data: Dict[str, Any], commit: bool = True) -> int:
         """Insert a new patient and return its generated ID.
 
         Args:
             data: dictionary of column names to values. Missing columns will
                 default to NULL in SQLite.  hospital_id, cancer_type, and sex
                 should be provided.
+            commit: Whether to commit the transaction immediately.
 
         Returns:
             The newly assigned patient_id.
@@ -305,16 +306,18 @@ class Database:
         sql = f"INSERT INTO Patient ({columns}) VALUES ({placeholders})"
         cur = self.conn.cursor()
         cur.execute(sql, data)
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return cur.lastrowid
 
-    def update_patient(self, patient_id: int, data: Dict[str, Any]) -> None:
+    def update_patient(self, patient_id: int, data: Dict[str, Any], commit: bool = True) -> None:
         """Update patient record with given fields."""
         set_clause = ",".join([f"{k} = :{k}" for k in data.keys()])
         sql = f"UPDATE Patient SET {set_clause} WHERE patient_id = :patient_id"
         params = {**data, "patient_id": patient_id}
         self.conn.execute(sql, params)
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def get_patient_by_id(self, patient_id: int) -> Optional[sqlite3.Row]:
         cur = self.conn.execute("SELECT * FROM Patient WHERE patient_id=?", (patient_id,))
@@ -347,22 +350,24 @@ class Database:
         return cur.fetchall()
 
     # ------------------ Surgery operations ------------------
-    def insert_surgery(self, patient_id: int, data: Dict[str, Any]) -> int:
+    def insert_surgery(self, patient_id: int, data: Dict[str, Any], commit: bool = True) -> int:
         data = {**data, "patient_id": patient_id}
         columns = ",".join(data.keys())
         placeholders = ":" + ",:".join(data.keys())
         sql = f"INSERT INTO Surgery ({columns}) VALUES ({placeholders})"
         cur = self.conn.cursor()
         cur.execute(sql, data)
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return cur.lastrowid
 
-    def update_surgery(self, surgery_id: int, data: Dict[str, Any]) -> None:
+    def update_surgery(self, surgery_id: int, data: Dict[str, Any], commit: bool = True) -> None:
         set_clause = ",".join([f"{k} = :{k}" for k in data.keys()])
         params = {**data, "surgery_id": surgery_id}
         sql = f"UPDATE Surgery SET {set_clause} WHERE surgery_id = :surgery_id"
         self.conn.execute(sql, params)
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def get_surgeries_by_patient(self, patient_id: int) -> List[sqlite3.Row]:
         cur = self.conn.execute(
@@ -375,21 +380,23 @@ class Database:
         self.conn.commit()
 
     # ------------------ Pathology operations ------------------
-    def insert_pathology(self, patient_id: int, data: Dict[str, Any]) -> int:
+    def insert_pathology(self, patient_id: int, data: Dict[str, Any], commit: bool = True) -> int:
         data = {**data, "patient_id": patient_id}
         columns = ",".join(data.keys())
         placeholders = ":" + ",:".join(data.keys())
         cur = self.conn.cursor()
         cur.execute(f"INSERT INTO Pathology ({columns}) VALUES ({placeholders})", data)
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return cur.lastrowid
 
-    def update_pathology(self, path_id: int, data: Dict[str, Any]) -> None:
+    def update_pathology(self, path_id: int, data: Dict[str, Any], commit: bool = True) -> None:
         set_clause = ",".join([f"{k} = :{k}" for k in data.keys()])
         params = {**data, "path_id": path_id}
         sql = f"UPDATE Pathology SET {set_clause} WHERE path_id = :path_id"
         self.conn.execute(sql, params)
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def get_pathologies_by_patient(self, patient_id: int) -> List[sqlite3.Row]:
         """
@@ -407,21 +414,23 @@ class Database:
         self.conn.commit()
 
     # ------------------ Molecular operations ------------------
-    def insert_molecular(self, patient_id: int, data: Dict[str, Any]) -> int:
+    def insert_molecular(self, patient_id: int, data: Dict[str, Any], commit: bool = True) -> int:
         data = {**data, "patient_id": patient_id}
         columns = ",".join(data.keys())
         placeholders = ":" + ",:".join(data.keys())
         cur = self.conn.cursor()
         cur.execute(f"INSERT INTO Molecular ({columns}) VALUES ({placeholders})", data)
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return cur.lastrowid
 
-    def update_molecular(self, mol_id: int, data: Dict[str, Any]) -> None:
+    def update_molecular(self, mol_id: int, data: Dict[str, Any], commit: bool = True) -> None:
         set_clause = ",".join([f"{k} = :{k}" for k in data.keys()])
         params = {**data, "mol_id": mol_id}
         sql = f"UPDATE Molecular SET {set_clause} WHERE mol_id = :mol_id"
         self.conn.execute(sql, params)
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def get_molecular_by_patient(self, patient_id: int) -> List[sqlite3.Row]:
         cur = self.conn.execute(
@@ -498,6 +507,7 @@ class Database:
         event_type: str,
         event_details: str = "",
         event_code: Optional[str] = None,
+        commit: bool = True
     ) -> int:
         """Insert a new follow-up event and return the event_id."""
         code = event_code or self.generate_unique_event_code(patient_id)
@@ -506,7 +516,8 @@ class Database:
             "INSERT INTO FollowUpEvent (patient_id, event_date, event_type, event_details, event_code) VALUES (?, ?, ?, ?, ?)",
             (patient_id, event_date, event_type, event_details, code),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return cur.lastrowid
 
     def update_followup_event(
@@ -517,6 +528,7 @@ class Database:
         event_type: str,
         event_details: str = "",
         event_code: Optional[str] = None,
+        commit: bool = True
     ) -> None:
         """Update an existing follow-up event."""
         code = event_code
@@ -533,7 +545,8 @@ class Database:
             """,
             (event_date, event_type, event_details, code, event_id, patient_id),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def get_followup_event_by_id(self, event_id: int) -> Optional[sqlite3.Row]:
         """Retrieve a single follow-up event by its primary key."""
@@ -552,6 +565,10 @@ class Database:
     def delete_followup_event(self, event_id: int) -> None:
         """Delete a specific follow-up event."""
         self.conn.execute("DELETE FROM FollowUpEvent WHERE event_id=?", (event_id,))
+        self.conn.commit()
+
+    def commit(self) -> None:
+        """Manual commit wrapper."""
         self.conn.commit()
 
     # ------------------ General operations ------------------
