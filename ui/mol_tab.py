@@ -21,27 +21,30 @@ class MolecularTab(ttk.Frame):
         super().__init__(parent)
         self.app = app
         self.db: Database = app.db
-        self.current_mol_id: Optional[int] = None
+        # 当前分子记录主键，用于区分新增与编辑状态
+        self.current_record_id: Optional[int] = None
         self._build_widgets()
 
     def _build_widgets(self) -> None:
         list_frame = ttk.LabelFrame(self, text="分子列表")
         list_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        # v2.16: 新增序号列，编号在每位患者内重新计数
-        columns = ["seq", "test_date", "platform", "gene", "variant"]
+        # v3.5: 列表改为“住院号 + 日期”，不再使用序号列
+        columns = ["hospital_id", "date", "platform", "gene", "variant", "seq"]
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="browse")
         # 设置列标题为中文
-        self.tree.heading("seq", text="序号")
-        self.tree.heading("test_date", text="检测日期")
+        self.tree.heading("hospital_id", text="住院号")
+        self.tree.heading("date", text="日期")
         self.tree.heading("platform", text="平台")
         self.tree.heading("gene", text="基因")
         self.tree.heading("variant", text="突变")
+        self.tree.heading("seq", text="序号")
         # 设置列宽
-        self.tree.column("seq", width=60, anchor="center")
-        self.tree.column("test_date", width=100, anchor="center")
+        self.tree.column("hospital_id", width=100, anchor="center")
+        self.tree.column("date", width=100, anchor="center")
         self.tree.column("platform", width=100, anchor="center")
         self.tree.column("gene", width=120, anchor="center")
         self.tree.column("variant", width=200, anchor="w")
+        self.tree.column("seq", width=50, anchor="center")
         self.tree.pack(fill="both", expand=True)
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
 
@@ -143,17 +146,35 @@ class MolecularTab(ttk.Frame):
             self.methylation_cb.grid_remove()
 
     def load_patient(self, patient_id: Optional[int]) -> None:
-        self.current_mol_id = None
+        # 切换患者时清除当前记录 ID
+        self.current_record_id = None
+        # 清空现有列表
         for item in self.tree.get_children():
             self.tree.delete(item)
         if not patient_id:
             return
+        # 根据患者ID查询分子记录
         moleculars = self.db.get_molecular_by_patient(patient_id)
-        # v2.13: 按日期降序排列（最近的在上）
-        moleculars_sorted = sorted(moleculars, key=lambda x: dict(x).get("test_date") or "", reverse=True)
-        for seq, m in enumerate(moleculars_sorted, 1):
-            # 将 sqlite3.Row 转换为字典，避免使用 Row 的 .get 方法
+        
+        # 先按日期正序排列并生成序号
+        moleculars_asc = sorted(
+            moleculars,
+            key=lambda x: dict(x).get("test_date") or "",
+        )
+        indexed_moleculars = []
+        for idx, m in enumerate(moleculars_asc, 1):
             m_dict = dict(m)
+            m_dict["_seq"] = idx
+            indexed_moleculars.append(m_dict)
+            
+        # 按检测日期降序排列（最近的在上）
+        moleculars_sorted = sorted(
+            indexed_moleculars,
+            key=lambda x: x.get("test_date") or "",
+            reverse=True,
+        )
+        for m_dict in moleculars_sorted:
+            # 转换日期显示
             test_date = m_dict.get("test_date")
             date_disp = ""
             if test_date:
@@ -164,19 +185,20 @@ class MolecularTab(ttk.Frame):
                     date_disp = f"{raw_str[:4]}-{raw_str[4:6]}-{raw_str[6:]}"
                 else:
                     date_disp = raw_str
-            # 提取平台信息
             platform = m_dict.get("platform") or ""
-            # v2.16: 增加序号列
+            # 第一列显示住院号
+            hosp_id = self.app.current_hospital_id or ""
             self.tree.insert(
                 "",
                 tk.END,
                 iid=m_dict["mol_id"],
                 values=(
-                    seq,
+                    hosp_id,
                     date_disp,
                     platform,
                     m_dict.get("gene"),
                     m_dict.get("variant"),
+                    m_dict.get("_seq"),
                 ),
             )
         # 自动选择并加载第一条记录以便显示明细
@@ -185,6 +207,7 @@ class MolecularTab(ttk.Frame):
             first = children[0]
             self.tree.selection_set(first)
             try:
+                # Treeview iid 为记录主键
                 self.load_record(int(first))
             except Exception as e:
                 # 记录错误但不阻断程序运行
@@ -198,7 +221,7 @@ class MolecularTab(ttk.Frame):
         # 选中右键所在的行
         self.tree.selection_set(item)
         # 仅在有选中记录时显示菜单
-        if self.current_mol_id or self.tree.selection():
+        if self.current_record_id or self.tree.selection():
             try:
                 self.context_menu.tk_popup(event.x_root, event.y_root)
             finally:
@@ -207,14 +230,16 @@ class MolecularTab(ttk.Frame):
     def _on_tree_select(self, event) -> None:
         sel = self.tree.selection()
         if sel:
+            # Treeview iid 即为记录主键
             self.load_record(int(sel[0]))
 
-    def load_record(self, mol_id: int) -> None:
-        row = self.db.conn.execute("SELECT * FROM Molecular WHERE mol_id=?", (mol_id,)).fetchone()
+    def load_record(self, record_id: int) -> None:
+        row = self.db.conn.execute("SELECT * FROM Molecular WHERE mol_id=?", (record_id,)).fetchone()
         if not row:
             return
         row = dict(row)  # 转换为字典
-        self.current_mol_id = mol_id
+        # 更新当前记录 ID
+        self.current_record_id = record_id
         self.platform_var.set(row.get("platform") or "")
         self.gene_var.set(row.get("gene") or "")
         self.variant_var.set(row.get("variant") or "")
@@ -229,7 +254,8 @@ class MolecularTab(ttk.Frame):
         self._on_platform_change()
 
     def new_record(self) -> None:
-        self.current_mol_id = None
+        # 新建/清空记录时清空当前记录 ID
+        self.current_record_id = None
         self.platform_var.set("")
         self.gene_var.set("")
         self.variant_var.set("")
@@ -279,19 +305,21 @@ class MolecularTab(ttk.Frame):
             data["ctc_count"] = None
             data["methylation_result"] = None
         try:
-            if self.current_mol_id is None:
+            # 根据当前记录 ID 决定新增或更新
+            if self.current_record_id is None:
                 new_id = self.db.insert_molecular(self.app.current_patient_id, data)
                 messagebox.showinfo("成功", f"分子记录已添加 (ID={new_id})")
             else:
-                self.db.update_molecular(self.current_mol_id, data)
+                self.db.update_molecular(self.current_record_id, data)
                 messagebox.showinfo("成功", "分子记录已更新")
+            # 保存完成后刷新列表
             self.load_patient(self.app.current_patient_id)
         except Exception as e:
             messagebox.showerror("错误", str(e))
 
     def delete_record(self) -> None:
         """删除当前分子记录，删除前进行两次确认。"""
-        if not self.current_mol_id:
+        if not self.current_record_id:
             return
         # 第一次确认
         if not messagebox.askyesno("确认删除", "确定删除当前分子记录吗？"):
@@ -300,9 +328,11 @@ class MolecularTab(ttk.Frame):
         if not messagebox.askyesno("再次确认", "删除后不可恢复，是否继续？"):
             return
         try:
-            self.db.delete_molecular(self.current_mol_id)
+            # 删除指定记录
+            self.db.delete_molecular(self.current_record_id)
             messagebox.showinfo("成功", "分子记录已删除")
-            self.current_mol_id = None
+            # 清除当前记录 ID 并刷新列表
+            self.current_record_id = None
             self.load_patient(self.app.current_patient_id)
             self.new_record()
         except Exception as e:

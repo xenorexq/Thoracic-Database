@@ -30,7 +30,8 @@ class FollowUpTab(ttk.Frame):
         self.app = app
         self.db: Database = app.db
         self.current_patient_id: Optional[int] = None
-        self.current_event_id: Optional[int] = None
+        # 当前随访记录ID，用于区分新增与编辑状态
+        self.current_record_id: Optional[int] = None
         self._build_widgets()
 
     def _build_widgets(self) -> None:
@@ -40,8 +41,8 @@ class FollowUpTab(ttk.Frame):
         list_frame = ttk.LabelFrame(self, text="随访事件列表")
         list_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
-        # 创建Treeview（新增序号列，按患者内独立编号）
-        columns = ("event_code", "event_date", "event_type", "event_details")
+        # 创建Treeview：显示住院号、日期、事件类型和详情
+        columns = ("hospital_id", "event_date", "event_type", "event_details", "seq")
         self.tree = ttk.Treeview(
             list_frame,
             columns=columns,
@@ -50,15 +51,17 @@ class FollowUpTab(ttk.Frame):
         )
         
         # 设置列标题和宽度
-        self.tree.heading("event_code", text="编号")
+        self.tree.heading("hospital_id", text="住院号")
         self.tree.heading("event_date", text="日期")
         self.tree.heading("event_type", text="事件类型")
         self.tree.heading("event_details", text="详情")
+        self.tree.heading("seq", text="序号")
         
-        self.tree.column("event_code", width=90, anchor="center")
+        self.tree.column("hospital_id", width=90, anchor="center")
         self.tree.column("event_date", width=110, anchor="center")
         self.tree.column("event_type", width=100, anchor="center")
         self.tree.column("event_details", width=300, anchor="w")
+        self.tree.column("seq", width=50, anchor="center")
         
         # 添加滚动条
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
@@ -81,9 +84,6 @@ class FollowUpTab(ttk.Frame):
         row1 = ttk.Frame(input_frame)
         row1.pack(fill="x", padx=5, pady=5)
 
-        # 创建内部事件编号变量，用于自动生成编号（界面中不显示）
-        self.event_code_var = tk.StringVar()
-
         ttk.Label(row1, text="事件类型:").pack(side="left")
         self.event_type_var = tk.StringVar()
         self.event_type_combo = ttk.Combobox(
@@ -98,7 +98,8 @@ class FollowUpTab(ttk.Frame):
 
         ttk.Label(row1, text="事件日期 (yymmdd):").pack(side="left", padx=(20, 0))
         self.event_date_var = tk.StringVar()
-        ttk.Entry(row1, textvariable=self.event_date_var, width=15).pack(side="left", padx=5)
+        self.event_date_entry = ttk.Entry(row1, textvariable=self.event_date_var, width=15)
+        self.event_date_entry.pack(side="left", padx=5)
 
         row2 = ttk.Frame(input_frame)
         row2.pack(fill="x", padx=5, pady=5)
@@ -176,8 +177,9 @@ class FollowUpTab(ttk.Frame):
 
     def load_patient(self, patient_id: int) -> None:
         """当切换患者时调用，加载该患者的所有随访事件"""
+        # 更新当前患者并重置当前记录
         self.current_patient_id = patient_id
-        self.current_event_id = None
+        self.current_record_id = None
         
         # 清空事件列表
         for item in self.tree.get_children():
@@ -186,25 +188,39 @@ class FollowUpTab(ttk.Frame):
         # 查询该患者的所有随访事件
         events = self.db.get_followup_events(patient_id)
         
-        # 按日期降序排序（最新的在上）
-        events_sorted = sorted(events, key=lambda e: dict(e).get("event_date") or "", reverse=True)
+        # 先按日期正序排列并生成序号
+        events_asc = sorted(
+            events,
+            key=lambda e: dict(e).get("event_date") or "",
+        )
+        indexed_events = []
+        for idx, e in enumerate(events_asc, 1):
+            e_dict = dict(e)
+            e_dict["_seq"] = idx
+            indexed_events.append(e_dict)
+            
+        # 按日期降序排序（最新的在上）以便显示
+        events_sorted = sorted(
+            indexed_events,
+            key=lambda e: e.get("event_date") or "",
+            reverse=True,
+        )
         
         # 填充到树形视图
-        for seq, e in enumerate(events_sorted, 1):
-            e_dict = dict(e)
+        for e_dict in events_sorted:
             event_id = e_dict["event_id"]
-            event_code = e_dict.get("event_code") or f"{seq:04d}"
             event_date = e_dict.get("event_date") or ""
             event_date_display = self._format_tree_date(event_date)
             event_type = e_dict.get("event_type") or ""
             event_details = e_dict.get("event_details") or ""
-            
-            # 插入到树形视图，使用event_id作为iid
+            # 第一列显示住院号
+            hosp_id = self.app.current_hospital_id or ""
+            # 插入到树形视图，使用 event_id 作为 iid
             self.tree.insert(
                 "",
                 tk.END,
                 iid=event_id,
-                values=(event_code, event_date_display, event_type, event_details),
+                values=(hosp_id, event_date_display, event_type, event_details, e_dict.get("_seq")),
             )
         
         # 自动选择第一条记录
@@ -239,19 +255,12 @@ class FollowUpTab(ttk.Frame):
         menu.post(event.x_root, event.y_root)
 
     def _assign_new_event_code(self) -> None:
-        """为当前患者生成一个随机编号"""
-        if not self.current_patient_id:
-            self.event_code_var.set("")
-            return
-        new_code = self.db.generate_unique_event_code(self.current_patient_id)
-        self.event_code_var.set(new_code)
+        # 已弃用: 随机编号现在由保存逻辑自动处理，不再需要在 UI 层生成
+        pass
 
     def _on_generate_code(self) -> None:
-        """使用【随机编号】按钮时触发"""
-        if not self.current_patient_id:
-            messagebox.showwarning("提示", "请先选择或创建患者")
-            return
-        self._assign_new_event_code()
+        # 已弃用
+        pass
 
     def load_record(self, event_id: int) -> None:
         """加载指定event_id的随访事件到输入框"""
@@ -270,12 +279,13 @@ class FollowUpTab(ttk.Frame):
             return
         
         row = dict(row)  # 转换为字典
-        self.current_event_id = event_id
+        # 更新当前记录 ID
+        self.current_record_id = event_id
         
         # 填充输入框
         self.event_type_var.set(row.get("event_type") or "")
         self.event_date_var.set(self._to_entry_date(row.get("event_date") or ""))
-        self.event_code_var.set(row.get("event_code") or "")
+        # self.event_code_var.set(row.get("event_code") or "") # 已弃用
         
         # 解析event_details
         event_details = row.get("event_details") or ""
@@ -303,8 +313,9 @@ class FollowUpTab(ttk.Frame):
 
     def new_record(self) -> None:
         """准备表单以便新增记录"""
-        self.current_event_id = None
-        self.event_code_var.set("")
+        # 新建/清空记录时清空当前记录 ID
+        self.current_record_id = None
+        # self.event_code_var.set("") # 已弃用
         self.event_type_var.set("")
         self.event_date_var.set("")
         self.site_var.set("")
@@ -316,6 +327,7 @@ class FollowUpTab(ttk.Frame):
 
     def save_record(self) -> None:
         """保存或更新一条随访记录"""
+        # 使用应用的当前患者ID
         self.current_patient_id = self.app.current_patient_id
 
         if not self.current_patient_id:
@@ -351,16 +363,16 @@ class FollowUpTab(ttk.Frame):
 
         try:
             # 如果编辑现有事件，不更改其编号
-            if self.current_event_id:
+            if self.current_record_id:
                 self.db.update_followup_event(
-                    self.current_event_id,
+                    self.current_record_id,
                     self.current_patient_id,
                     event_date,
                     event_type,
                     event_details,
                     event_code=None,
                 )
-                event_id = self.current_event_id
+                event_id = self.current_record_id
                 messagebox.showinfo("成功", "随访事件已更新")
             else:
                 # 为新事件生成唯一编号
@@ -372,9 +384,8 @@ class FollowUpTab(ttk.Frame):
                     event_details,
                     event_code=new_code,
                 )
-                # 保存生成的编号，供内部使用
-                self.event_code_var.set(new_code)
-                messagebox.showinfo("成功", f"随访事件已创建，编号: {new_code}")
+                # self.event_code_var.set(new_code) # UI不再维护该变量
+                messagebox.showinfo("成功", "随访事件已创建")
         except Exception as e:
             messagebox.showerror("错误", f"保存失败: {str(e)}")
             return
@@ -391,7 +402,7 @@ class FollowUpTab(ttk.Frame):
 
     def delete_record(self) -> None:
         """删除当前选中的随访事件"""
-        if not self.current_event_id:
+        if not self.current_record_id:
             messagebox.showwarning("警告", "请先选择要删除的事件")
             return
         
@@ -399,7 +410,8 @@ class FollowUpTab(ttk.Frame):
             return
         
         try:
-            self.db.delete_followup_event(self.current_event_id)
+            # 删除当前记录
+            self.db.delete_followup_event(self.current_record_id)
             messagebox.showinfo("成功", "随访事件已删除")
             
             # 重新加载患者的所有事件
@@ -413,9 +425,9 @@ class FollowUpTab(ttk.Frame):
         清空随访表单和事件列表。
         当点击“新建患者”或需要初始化随访页面时调用。
         """
-        # 重置当前患者和事件ID
+        # 重置当前患者和记录ID
         self.current_patient_id = None
-        self.current_event_id = None
+        self.current_record_id = None
         # 清空事件列表
         for item in self.tree.get_children():
             self.tree.delete(item)

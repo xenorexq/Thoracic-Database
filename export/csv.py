@@ -213,21 +213,70 @@ def _reorder_pathology(row_dict: dict) -> dict:
 
     return row_dict
 
+def _annotate_sequence(rows: List[dict], table_name: str) -> List[dict]:
+    """Add a sequence number (1, 2, 3...) for each patient's records sorted by date.
+    
+    Applicable to Surgery, Pathology, Molecular, and FollowUpEvent tables.
+    """
+    if table_name not in ["Surgery", "Pathology", "Molecular", "FollowUpEvent"]:
+        return rows
+    
+    # Sort all rows by date to ensure consistent numbering
+    date_field_map = {
+        "Surgery": "surgery_date6",
+        "Pathology": "pathology_date",
+        "Molecular": "test_date",
+        "FollowUpEvent": "event_date"
+    }
+    date_col = date_field_map.get(table_name)
+    if not date_col:
+        return rows
+
+    # Group rows by patient_id
+    grouped = {}
+    for row in rows:
+        pid = row.get("patient_id")
+        if pid not in grouped:
+            grouped[pid] = []
+        grouped[pid].append(row)
+    
+    annotated_rows = []
+    # For each patient, sort by date ascending and assign sequence
+    for pid in grouped:
+        patient_rows = grouped[pid]
+        # Sort by date ascending
+        patient_rows.sort(key=lambda x: str(x.get(date_col) or ""))
+        
+        for i, row in enumerate(patient_rows, 1):
+            # Create a new dict to avoid modifying original if shared
+            new_row = row.copy()
+            new_row["Seq"] = i
+            annotated_rows.append(new_row)
+            
+    return annotated_rows
+
+
 def _write_csv(path: Path, rows: Iterable[dict], table_name: str) -> None:
 
     """Write a list of dictionaries to a CSV file after cleaning and formatting."""
 
     try:
 
-        # Convert to list and remove excluded fields while formatting dates
+        # Convert to list
+        rows_list_raw = [dict(row) if not isinstance(row, dict) else row for row in rows]
+        
+        # Add sequence numbers if applicable
+        if table_name in ["Surgery", "Pathology", "Molecular", "FollowUpEvent"]:
+            rows_list_raw = _annotate_sequence(rows_list_raw, table_name)
 
+        # Clean and format
         rows_list = []
 
-        for row in rows:
+        for row in rows_list_raw:
 
             try:
 
-                row_dict = dict(row) if not isinstance(row, dict) else row
+                row_dict = dict(row)
 
                 cleaned = _clean_row(row_dict)
 
@@ -260,8 +309,14 @@ def _write_csv(path: Path, rows: Iterable[dict], table_name: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
 
         with path.open("w", newline="", encoding="utf-8") as f:
+            
+            # Ensure 'Seq' is the first column if present
+            header = list(rows_list[0].keys())
+            if "Seq" in header:
+                header.remove("Seq")
+                header = ["Seq"] + header
 
-            writer = csv.DictWriter(f, fieldnames=list(rows_list[0].keys()))
+            writer = csv.DictWriter(f, fieldnames=header)
 
             writer.writeheader()
 

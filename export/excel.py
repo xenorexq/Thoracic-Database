@@ -110,15 +110,68 @@ def _reorder_pathology(row_dict: dict) -> dict:
     return row_dict
 
 
+def _annotate_sequence(rows: List[dict], table_name: str) -> List[dict]:
+    """Add a sequence number (1, 2, 3...) for each patient's records sorted by date.
+    
+    Applicable to Surgery, Pathology, Molecular, and FollowUpEvent tables.
+    """
+    if table_name not in ["Surgery", "Pathology", "Molecular", "FollowUpEvent"]:
+        return rows
+    
+    # Sort all rows by date to ensure consistent numbering
+    date_field_map = {
+        "Surgery": "surgery_date6",
+        "Pathology": "pathology_date",
+        "Molecular": "test_date",
+        "FollowUpEvent": "event_date"
+    }
+    date_col = date_field_map.get(table_name)
+    if not date_col:
+        return rows
+
+    # Group rows by patient_id
+    grouped = {}
+    for row in rows:
+        pid = row.get("patient_id")
+        if pid not in grouped:
+            grouped[pid] = []
+        grouped[pid].append(row)
+    
+    annotated_rows = []
+    # For each patient, sort by date ascending and assign sequence
+    for pid in grouped:
+        patient_rows = grouped[pid]
+        # Sort by date ascending
+        patient_rows.sort(key=lambda x: str(x.get(date_col) or ""))
+        
+        for i, row in enumerate(patient_rows, 1):
+            # Create a new dict to avoid modifying original if shared
+            new_row = row.copy()
+            # Add sequence column with a generic name like 'Seq' or specific '{Table}_Seq'
+            # Using generic 'Seq' as it is clear within the sheet context
+            new_row["Seq"] = i
+            annotated_rows.append(new_row)
+            
+    return annotated_rows
+
+
 def _write_sheet(wb: Workbook, sheet_name: str, rows: Iterable[dict]) -> None:
     """写入工作表数据，包含异常处理。"""
     try:
         ws = wb.create_sheet(title=sheet_name)
-        # Convert to list, remove excluded fields and format dates
+        
+        # Convert to list
+        rows_list_raw = [dict(row) if not isinstance(row, dict) else row for row in rows]
+        
+        # Calculate sequences before cleaning (cleaning might remove fields needed for sorting?)
+        # No, cleaning just formats dates. Better to annotate first.
+        if sheet_name in ["Surgery", "Pathology", "Molecular", "FollowUpEvent"]:
+            rows_list_raw = _annotate_sequence(rows_list_raw, sheet_name)
+            
+        # Clean and format
         rows_list = []
-        for row in rows:
+        for row_dict in rows_list_raw:
             try:
-                row_dict = dict(row) if not isinstance(row, dict) else row
                 cleaned = _clean_row(row_dict)
                 # For Pathology sheet reorder airway_spread before pleural_invasion
                 if sheet_name == "Pathology":
@@ -132,7 +185,14 @@ def _write_sheet(wb: Workbook, sheet_name: str, rows: Iterable[dict]) -> None:
             return
         
         # Write header based on cleaned row keys (order matters)
-        header = list(rows_list[0].keys())
+        # Ensure 'Seq' is the first column if present
+        first_keys = list(rows_list[0].keys())
+        if "Seq" in first_keys:
+            first_keys.remove("Seq")
+            header = ["Seq"] + first_keys
+        else:
+            header = first_keys
+            
         ws.append(header)
         for row in rows_list:
             # Convert sqlite3.Row to dict to support .get() method

@@ -159,21 +159,3 @@ def format_birth_ym6(value: str) -> str:
     year = value[:4]
     month = value[4:]
     return f"{year}-{month}"
-
-
-# 新增: 验证住院号仅包含字母和数字
-def validate_hospital_id(value: str) -> Tuple[bool, str]:
-    """Validate hospital_id: only letters and digits are allowed.
-
-    Args:
-        value: The hospital_id string to validate.
-
-    Returns:
-        A tuple (True, "") if valid, otherwise (False, error message).
-    """
-    if not value:
-        return False, "住院号为必填项"
-    # Check for invalid characters
-    if not value.isalnum():
-        return False, "住院号格式错误，只能包含字母和数字"
-    return True, ""

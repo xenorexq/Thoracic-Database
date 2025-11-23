@@ -9,14 +9,10 @@ import re
 import tkinter as tk
 from tkinter import ttk, messagebox
 from typing import Optional, Dict
+import sqlite3  # 用于捕获唯一约束异常
 
 from db.models import Database
-from utils.validators import (
-    validate_birth_ym6,
-    format_birth_ym6,
-    validate_date6,
-    validate_hospital_id,
-)
+from utils.validators import validate_birth_ym6, format_birth_ym6, validate_date6
 # 已弃用 TNM 分期映射功能，不再导入 get_lung_stage/get_eso_stage
 from tkhtmlview import HTMLScrolledText
 
@@ -37,7 +33,10 @@ class PatientTab(ttk.Frame):
         self.context_menu = tk.Menu(self, tearoff=0)
         self.context_menu.add_command(label="删除当前患者", command=self._confirm_delete_patient)
         # 绑定鼠标右键事件。使用 bind_all 可确保在该页任何子控件上右键点击时触发。
+        # 在 macOS 上，两指点击通常会映射为 Button-2，Ctrl+左键可作为右键，因此一并绑定。
         self.bind_all("<Button-3>", self._show_context_menu, add="+")
+        self.bind_all("<Button-2>", self._show_context_menu, add="+")
+        self.bind_all("<Control-Button-1>", self._show_context_menu, add="+")
 
     @staticmethod
     def _render_markdown(content: str) -> str:
@@ -637,10 +636,8 @@ class PatientTab(ttk.Frame):
         cancer_type = self.cancer_var.get()
         sex = self.sex_var.get()
 
-        # 使用通用验证器验证住院号
-        ok, msg = validate_hospital_id(hospital_id)
-        if not ok:
-            messagebox.showerror("错误", msg)
+        if not hospital_id:
+            messagebox.showerror("错误", "住院号为必填项")
             return
         if not cancer_type:
             messagebox.showerror("错误", "癌种为必填项")
@@ -725,22 +722,42 @@ class PatientTab(ttk.Frame):
         }
 
         try:
+            # 在保存时统一决定 patient_id：
+            # 1. 如果当前 tab 已持有患者 ID，则优先使用它更新；
+            # 2. 否则尝试根据住院号查询现有患者；
+            # 3. 若仍不存在，则新建。
+            pid: Optional[int] = None
             if self.current_patient_id:
-                # 更新
-                self.db.update_patient(self.current_patient_id, data)
+                pid = self.current_patient_id
+            else:
+                existing = self.db.get_patient_by_hospital_id(hospital_id)
+                if existing:
+                    # 注意：数据库中列名为 patient_id
+                    pid = existing.get("patient_id") or existing.get("id")
+
+            if pid:
+                # 执行更新
+                self.db.update_patient(pid, data)
+                self.current_patient_id = pid
+                self.app.current_patient_id = pid
                 messagebox.showinfo("成功", "患者信息已更新")
             else:
-                # 新建
-                patient_id = self.db.insert_patient(data)
-                self.current_patient_id = patient_id
-                self.app.current_patient_id = patient_id
-                messagebox.showinfo("成功", f"患者已创建，ID: {patient_id}")
-            
-            # 刷新患者列表
+                # 新建患者
+                pid = self.db.insert_patient(data)
+                self.current_patient_id = pid
+                self.app.current_patient_id = pid
+                messagebox.showinfo("成功", f"患者已创建，ID: {pid}")
+
+            # 刷新患者列表并高亮当前患者
             self.app.refresh_patient_list(self.current_patient_id)
+            
+            # 全局重新加载患者数据，确保 app.current_hospital_id 等状态更新，
+            # 并且同步刷新所有标签页（包括 Surgery, Pathology 等）
+            self.app.load_patient(self.current_patient_id)
+            
             self.app.status(f"已保存患者: {hospital_id}")
-        
         except Exception as e:
+            # 捕获所有异常并提示用户
             messagebox.showerror("错误", f"保存失败: {str(e)}")
 
     def load_patient(self, patient_dict: Dict):

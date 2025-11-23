@@ -23,7 +23,8 @@ class SurgeryTab(ttk.Frame):
         super().__init__(parent)
         self.app = app
         self.db: Database = app.db
-        self.current_surgery_id: Optional[int] = None
+        # 当前手术记录 ID，用于区分新增与编辑状态
+        self.current_record_id: Optional[int] = None
         self.cancer_type: str = ""
         self._build_widgets()
 
@@ -31,19 +32,29 @@ class SurgeryTab(ttk.Frame):
         # Top list of surgeries
         list_frame = ttk.LabelFrame(self, text="手术列表")
         list_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        # v2.16: 新增序号列，每位患者内独立编号
-        columns = ["seq", "date", "indication", "duration_min"]
+        # v3.5: 改为显示住院号+日期的结构，不再使用序号列
+        columns = ["hospital_id", "date", "indication", "duration_min", "seq"]
         # 限制列表高度为3行，避免占用过多垂直空间
-        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="browse", height=3)
-        self.tree.heading("seq", text="序号")
+        self.tree = ttk.Treeview(
+            list_frame,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+            height=3,
+        )
+        self.tree.heading("hospital_id", text="住院号")
         self.tree.heading("date", text="日期")
         self.tree.heading("indication", text="手术适应症")
         self.tree.heading("duration_min", text="时长(分钟)")
-        self.tree.column("seq", width=60, anchor="center")
+        self.tree.heading("seq", text="序号")
+        # 设置列宽和对齐方式
+        self.tree.column("hospital_id", width=100, anchor="center")
         self.tree.column("date", width=100, anchor="center")
         self.tree.column("indication", width=150, anchor="w")
         self.tree.column("duration_min", width=100, anchor="center")
+        self.tree.column("seq", width=50, anchor="center")
         self.tree.pack(fill="both", expand=True)
+        # 绑定选择事件
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
 
         # 右键菜单：删除当前手术记录
@@ -208,16 +219,35 @@ class SurgeryTab(ttk.Frame):
 
     def load_patient(self, patient_id: Optional[int]) -> None:
         """Populate the surgery list for the given patient."""
-        self.current_surgery_id = None
+        # 切换患者时，清除当前手术记录 ID
+        self.current_record_id = None
         for item in self.tree.get_children():
             self.tree.delete(item)
         if not patient_id:
             return
         surgeries = self.db.get_surgeries_by_patient(patient_id)
-        # v2.13: 按日期降序排列（最近的在上）
-        surgeries_sorted = sorted(surgeries, key=lambda x: dict(x).get("surgery_date6") or "", reverse=True)
-        for seq, s in enumerate(surgeries_sorted, 1):
-            s_dict = dict(s)  # 转换为字典
+        # 按日期降序排列（最近的在上）
+        # 为了生成序号，我们先按正序排序计算序号，然后再倒序显示
+        surgeries_date_asc = sorted(
+            surgeries,
+            key=lambda x: dict(x).get("surgery_date6") or "",
+        )
+        # 生成带序号的字典列表
+        indexed_surgeries = []
+        for idx, s in enumerate(surgeries_date_asc, 1):
+            s_dict = dict(s)
+            s_dict["_seq"] = idx
+            indexed_surgeries.append(s_dict)
+            
+        # 再按倒序排列以供显示
+        surgeries_sorted = sorted(
+            indexed_surgeries,
+            key=lambda x: x.get("surgery_date6") or "",
+            reverse=True,
+        )
+        
+        for s_dict in surgeries_sorted:
+            # s_dict 已经是字典了
             raw_date = s_dict.get("surgery_date6")
             date_disp = ""
             if raw_date:
@@ -228,12 +258,13 @@ class SurgeryTab(ttk.Frame):
                     date_disp = f"{raw_str[:4]}-{raw_str[4:6]}-{raw_str[6:]}"
                 else:
                     date_disp = raw_str
-            # v2.16: 增加每位患者内的序号列
+            # 使用全局住院号作为第一列
+            hosp_id = self.app.current_hospital_id or ""
             self.tree.insert(
                 "",
                 tk.END,
                 iid=s_dict["surgery_id"],
-                values=(seq, date_disp, s_dict.get("indication"), s_dict.get("duration_min")),
+                values=(hosp_id, date_disp, s_dict.get("indication"), s_dict.get("duration_min"), s_dict.get("_seq")),
             )
         # Automatically select and load the first record if available
         children = self.tree.get_children()
@@ -241,6 +272,7 @@ class SurgeryTab(ttk.Frame):
             first = children[0]
             self.tree.selection_set(first)
             try:
+                # iids 存储的是手术记录的主键
                 self.load_record(int(first))
             except Exception as e:
                 # 记录错误但不阻断程序运行
@@ -249,6 +281,7 @@ class SurgeryTab(ttk.Frame):
     def _on_tree_select(self, event) -> None:
         sel = self.tree.selection()
         if sel:
+            # Treeview 的 iid 即为记录主键
             self.load_record(int(sel[0]))
 
     def _on_right_click(self, event) -> None:
@@ -259,7 +292,7 @@ class SurgeryTab(ttk.Frame):
         # 选中右键所在行
         self.tree.selection_set(item)
         # 仅在选中记录时显示菜单
-        if self.current_surgery_id or self.tree.selection():
+        if self.current_record_id or self.tree.selection():
             try:
                 self.context_menu.tk_popup(event.x_root, event.y_root)
             finally:
@@ -270,7 +303,8 @@ class SurgeryTab(ttk.Frame):
         if not row:
             return
         row = dict(row)  # 转换为字典
-        self.current_surgery_id = surgery_id
+        # 更新当前记录 ID
+        self.current_record_id = surgery_id
         self.date_var.set(row.get("surgery_date6") or "")
         self.indication_var.set(row.get("indication") or "原发治疗")
         self.planned_var.set(row.get("planned") or 1)
@@ -293,7 +327,8 @@ class SurgeryTab(ttk.Frame):
         self.notes_text.insert(tk.END, row.get("notes_surgery") or "")
 
     def new_record(self) -> None:
-        self.current_surgery_id = None
+        # 新建/清空记录时清空当前记录 ID
+        self.current_record_id = None
         self.date_var.set("")
         self.indication_var.set("原发治疗")
         self.planned_var.set(1)
@@ -357,19 +392,23 @@ class SurgeryTab(ttk.Frame):
             "notes_surgery": self.notes_text.get("1.0", tk.END).strip() or None,
         }
         try:
-            if self.current_surgery_id is None:
+            # 根据当前记录 ID 决定新增还是更新
+            if self.current_record_id is None:
+                # 新建记录
                 new_id = self.db.insert_surgery(self.app.current_patient_id, data)
                 messagebox.showinfo("成功", f"手术记录已添加 (ID={new_id})")
             else:
-                self.db.update_surgery(self.current_surgery_id, data)
+                # 更新已有记录
+                self.db.update_surgery(self.current_record_id, data)
                 messagebox.showinfo("成功", "手术记录已更新")
+            # 保存完成后刷新列表并重置当前状态
             self.load_patient(self.app.current_patient_id)
         except Exception as e:
             messagebox.showerror("错误", str(e))
 
     def delete_record(self) -> None:
         """删除当前手术记录，删除前进行两次确认。"""
-        if not self.current_surgery_id:
+        if not self.current_record_id:
             return
         # 第一次确认
         if not messagebox.askyesno("确认删除", "确定删除当前手术记录吗？"):
@@ -378,9 +417,11 @@ class SurgeryTab(ttk.Frame):
         if not messagebox.askyesno("再次确认", "删除后不可恢复，是否继续？"):
             return
         try:
-            self.db.delete_surgery(self.current_surgery_id)
+            # 删除指定记录
+            self.db.delete_surgery(self.current_record_id)
             messagebox.showinfo("成功", "手术记录已删除")
-            self.current_surgery_id = None
+            # 清除当前记录 ID 并刷新列表
+            self.current_record_id = None
             self.load_patient(self.app.current_patient_id)
             self.new_record()
         except Exception as e:

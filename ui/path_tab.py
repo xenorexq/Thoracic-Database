@@ -20,14 +20,15 @@ class PathologyTab(ttk.Frame):
         super().__init__(parent)
         self.app = app
         self.db: Database = app.db
-        self.current_path_id: Optional[int] = None
+        # 当前病理记录主键，用于区分新增与编辑状态
+        self.current_record_id: Optional[int] = None
         self._build_widgets()
 
     def _build_widgets(self) -> None:
         list_frame = ttk.LabelFrame(self, text="病理列表")
         list_frame.pack(fill="x", expand=False, padx=5, pady=5)
-        # v2.16: 新增序号列，保证每位患者内独立编号
-        columns = ["seq", "pathology_date", "pathology_no", "histology", "specimen_type"]
+        # v3.5: 列表改为“住院号 + 日期”开头，不再使用序号列
+        columns = ["hospital_id", "date", "pathology_no", "histology", "specimen_type", "seq"]
         # 将列表高度限制为3行，以便下面的表单区域更容易显示完整内容
         self.tree = ttk.Treeview(
             list_frame,
@@ -36,18 +37,20 @@ class PathologyTab(ttk.Frame):
             selectmode="browse",
             height=3,
         )
-        # 标题设置为中文
-        self.tree.heading("seq", text="序号")
-        self.tree.heading("pathology_date", text="日期")
+        # 标题设置
+        self.tree.heading("hospital_id", text="住院号")
+        self.tree.heading("date", text="日期")
         self.tree.heading("pathology_no", text="病理号")
         self.tree.heading("histology", text="组织学")
         self.tree.heading("specimen_type", text="标本类型")
+        self.tree.heading("seq", text="序号")
         # 列宽设置
-        self.tree.column("seq", width=60, anchor="center")
-        self.tree.column("pathology_date", width=100, anchor="center")
+        self.tree.column("hospital_id", width=100, anchor="center")
+        self.tree.column("date", width=100, anchor="center")
         self.tree.column("pathology_no", width=120, anchor="center")
         self.tree.column("histology", width=100, anchor="center")
         self.tree.column("specimen_type", width=100, anchor="center")
+        self.tree.column("seq", width=50, anchor="center")
         self.tree.pack(fill="x", expand=False)
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
 
@@ -172,21 +175,39 @@ class PathologyTab(ttk.Frame):
         ttk.Button(btn_frame, text="清空", command=self.new_record).pack(side="left", padx=2)
 
     def load_patient(self, patient_id: Optional[int]) -> None:
-        self.current_path_id = None
+        # 切换患者时清除当前记录 ID
+        self.current_record_id = None
+        # 清空现有列表
         for item in self.tree.get_children():
             self.tree.delete(item)
         if not patient_id:
             return
+        # 根据患者 ID 查询病理记录
         pathologies = self.db.get_pathologies_by_patient(patient_id)
-        # v2.13: 按日期降序排列（最近的在上）
-        pathologies_sorted = sorted(pathologies, key=lambda x: dict(x).get("pathology_date") or "", reverse=True)
-        for seq, p in enumerate(pathologies_sorted, 1):
-            # 将 sqlite3.Row 转换为字典，避免使用 Row 的 .get 方法
+        
+        # 先按日期正序排列并生成序号
+        pathologies_asc = sorted(
+            pathologies,
+            key=lambda x: dict(x).get("pathology_date") or "",
+        )
+        indexed_pathologies = []
+        for idx, p in enumerate(pathologies_asc, 1):
             p_dict = dict(p)
+            p_dict["_seq"] = idx
+            indexed_pathologies.append(p_dict)
+            
+        # 按日期降序排列（最近的在上）以便显示
+        pathologies_sorted = sorted(
+            indexed_pathologies,
+            key=lambda x: x.get("pathology_date") or "",
+            reverse=True,
+        )
+        
+        for p_dict in pathologies_sorted:
+            # 提取病理号和标本类型
             no = p_dict.get("pathology_no") or ""
-            # 提取标本类型
             specimen = p_dict.get("specimen_type") or ""
-            # v2.13: 删除path_id列，添加pathology_date列
+            # 日期显示转换
             raw_date = p_dict.get("pathology_date") or ""
             date_disp = ""
             if raw_date:
@@ -197,16 +218,20 @@ class PathologyTab(ttk.Frame):
                     date_disp = f"{raw_str[:4]}-{raw_str[4:6]}-{raw_str[6:]}"
                 else:
                     date_disp = raw_str
+            # 列表第一列显示住院号
+            hosp_id = self.app.current_hospital_id or ""
+            # 插入行，iid 为记录主键
             self.tree.insert(
                 "",
                 tk.END,
                 iid=p_dict["path_id"],
                 values=(
-                    seq,
+                    hosp_id,
                     date_disp,
                     no,
                     p_dict.get("histology"),
                     specimen,
+                    p_dict.get("_seq"),
                 ),
             )
         # 自动选择并加载第一条记录以便显示明细
@@ -215,6 +240,7 @@ class PathologyTab(ttk.Frame):
             first = children[0]
             self.tree.selection_set(first)
             try:
+                # Treeview iid 为记录主键
                 self.load_record(int(first))
             except Exception as e:
                 # 记录错误但不阻断程序运行
@@ -228,7 +254,7 @@ class PathologyTab(ttk.Frame):
         # 选中右键所在行
         self.tree.selection_set(item)
         # 仅在选中记录时显示菜单
-        if self.current_path_id or self.tree.selection():
+        if self.current_record_id or self.tree.selection():
             try:
                 self.context_menu.tk_popup(event.x_root, event.y_root)
             finally:
@@ -237,14 +263,16 @@ class PathologyTab(ttk.Frame):
     def _on_tree_select(self, event) -> None:
         sel = self.tree.selection()
         if sel:
+            # Treeview iid 即为记录主键
             self.load_record(int(sel[0]))
 
-    def load_record(self, path_id: int) -> None:
-        row = self.db.conn.execute("SELECT * FROM Pathology WHERE path_id=?", (path_id,)).fetchone()
+    def load_record(self, record_id: int) -> None:
+        row = self.db.conn.execute("SELECT * FROM Pathology WHERE path_id=?", (record_id,)).fetchone()
         if not row:
             return
         row = dict(row)  # 转换为字典
-        self.current_path_id = path_id
+        # 更新当前记录 ID
+        self.current_record_id = record_id
         self.specimen_var.set(row.get("specimen_type") or "")
         self.histology_var.set(row.get("histology") or "")
         self.diff_var.set(row.get("differentiation") or "")
@@ -283,7 +311,8 @@ class PathologyTab(ttk.Frame):
             self.aden_subtype_var.set(row.get("aden_subtype") or "")
 
     def new_record(self) -> None:
-        self.current_path_id = None
+        # 新建/清空记录时清空当前记录 ID
+        self.current_record_id = None
         self.specimen_var.set("")
         self.histology_var.set("")
         self.diff_var.set("")
@@ -337,19 +366,21 @@ class PathologyTab(ttk.Frame):
             "aden_subtype": self.aden_subtype_var.get() or None,
         }
         try:
-            if self.current_path_id is None:
+            # 根据当前记录 ID 决定新增还是更新
+            if self.current_record_id is None:
                 new_id = self.db.insert_pathology(self.app.current_patient_id, data)
                 messagebox.showinfo("成功", f"病理记录已添加 (ID={new_id})")
             else:
-                self.db.update_pathology(self.current_path_id, data)
+                self.db.update_pathology(self.current_record_id, data)
                 messagebox.showinfo("成功", "病理记录已更新")
+            # 保存完成后刷新列表
             self.load_patient(self.app.current_patient_id)
         except Exception as e:
             messagebox.showerror("错误", str(e))
 
     def delete_record(self) -> None:
         """删除当前病理记录，删除前进行两次确认。"""
-        if not self.current_path_id:
+        if not self.current_record_id:
             return
         # 第一次确认
         if not messagebox.askyesno("确认删除", "确定删除当前病理记录吗？"):
@@ -358,9 +389,11 @@ class PathologyTab(ttk.Frame):
         if not messagebox.askyesno("再次确认", "删除后不可恢复，是否继续？"):
             return
         try:
-            self.db.delete_pathology(self.current_path_id)
+            # 删除指定记录
+            self.db.delete_pathology(self.current_record_id)
             messagebox.showinfo("成功", "病理记录已删除")
-            self.current_path_id = None
+            # 清除当前记录 ID 并刷新列表
+            self.current_record_id = None
             self.load_patient(self.app.current_patient_id)
             self.new_record()
         except Exception as e:

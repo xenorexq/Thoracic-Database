@@ -18,8 +18,6 @@ from ui.path_tab import PathologyTab
 from ui.mol_tab import MolecularTab
 from ui.fu_tab import FollowUpTab
 from ui.export_tab import ExportTab
-from db.importer import import_databases  # 用于后台数据库合并
-import threading  # 用于后台线程导入
 from staging.lookup import load_mapping_from_csv
 from db.migrate import migrate_database
 
@@ -43,7 +41,10 @@ class ThoracicApp:
         load_mapping_from_csv(self.db, assets_dir)
 
         # 当前患者状态
+        # 统一使用 patient_id 和 hospital_id 保存当前选中患者的标识
+        # patient_id 用于数据库主键；hospital_id 对应住院号
         self.current_patient_id = None
+        self.current_hospital_id = None
         self.cancer_type = None
 
         # 创建主容器（使用PanedWindow实现左右分栏）
@@ -274,16 +275,23 @@ class ThoracicApp:
 
     def load_patient(self, patient_id: int):
         """加载患者数据到各个Tab"""
-        self.current_patient_id = patient_id
-        
+        """根据患者ID加载患者信息并更新当前状态。"""
+        # 首先重置当前患者标识
+        self.current_patient_id = None
+        self.current_hospital_id = None
+
         # 获取患者信息
         row = self.db.get_patient_by_id(patient_id)
         if row:
             patient_dict = dict(row)
+            # 更新全局当前患者状态
+            self.current_patient_id = patient_id
+            self.current_hospital_id = patient_dict.get("hospital_id") or None
             self.cancer_type = patient_dict.get("cancer_type")
             
             # 加载到各个Tab
             self.patient_tab.load_patient(patient_dict)
+            # 其他标签页使用 patient_id 加载数据
             self.surgery_tab.load_patient(patient_id)
             self.path_tab.load_patient(patient_id)
             self.mol_tab.load_patient(patient_id)
@@ -296,7 +304,9 @@ class ThoracicApp:
 
     def new_patient(self):
         """新建患者"""
+        # 新建患者时，清空当前患者状态
         self.current_patient_id = None
+        self.current_hospital_id = None
         self.cancer_type = None
         
         # 清空并刷新所有Tab
@@ -361,101 +371,232 @@ class ThoracicApp:
         self.status_var.set(text)
     
     def import_database(self):
-        """导入其他数据库并合并新患者数据。
+        """导入其他数据库并合并新患者数据
 
         此功能允许从一个或多个 SQLite 数据库文件中批量导入患者及其所有关联记录。
         导入逻辑仅以患者表 (`Patient`) 的 `hospital_id` 作为唯一标识，
         只有当源库中的住院号在当前数据库不存在时才会导入。
         对于已存在的患者，源库中的手术、病理、分子及随访记录都将被忽略，
         以保护当前库中经过编辑或补充的数据。
-        所有耗时的导入操作在后台线程中执行，避免阻塞用户界面。
         """
         from tkinter import filedialog
+        import sqlite3
+
+        # 允许多选多个数据库文件
         source_dbs = filedialog.askopenfilenames(
             title="选择要导入的数据库文件",
-            filetypes=[("SQLite数据库", "*.db"), ("所有文件", "*.*")],
+            filetypes=[("SQLite数据库", "*.db"), ("所有文件", "*.*")]
         )
+
         if not source_dbs:
             return
 
-        def run_import(paths):
-            """在后台线程中执行导入逻辑。
+        # 构建当前数据库已存在的 hospital_id 集合
+        dest_ids = set(
+            row[0]
+            for row in self.db.conn.execute("SELECT hospital_id FROM Patient").fetchall()
+            if row[0]
+        )
 
-            注意：SQLite 连接不能跨线程复用，因此这里在工作线程中
-            单独打开一个新的 Database 实例（指向同一个 db_path），导入完成
-            后再关闭连接，只通过 Tk 的 ``after`` 回到主线程更新界面。
-            """
+        total_imports = {
+            "Patient": 0,
+            "Surgery": 0,
+            "Pathology": 0,
+            "Molecular": 0,
+            "FollowUpEvent": 0,
+        }
 
-            from db.models import Database  # 局部导入以避免循环依赖
-
-            # 在主线程中更新状态栏
-            self.root.after(0, lambda: self.status("正在导入，请稍候..."))
-
+        for source_db in source_dbs:
             try:
-                # 在当前线程重新打开一个数据库连接
-                dest_path = getattr(self.db, "db_path", None)
-                thread_db = Database(dest_path)
-                try:
-                    stats = import_databases(thread_db, paths)
-                finally:
-                    # 确保工作线程的连接被关闭
+                src_conn = sqlite3.connect(source_db)
+                src_conn.row_factory = sqlite3.Row
+
+                # 获取所有患者
+                cursor = src_conn.execute("SELECT * FROM Patient")
+                patient_rows = cursor.fetchall()
+
+                # 映射：源 patient_id -> 目标 patient_id
+                id_map = {}
+
+                # 第一阶段：导入新患者并建立映射
+                for row in patient_rows:
+                    hospital_id = row["hospital_id"]
+                    if not hospital_id or hospital_id in dest_ids:
+                        continue
+                    patient_data = dict(row)
+                    patient_data.pop("patient_id", None)
+                    new_pid = self.db.insert_patient(patient_data)
+                    dest_ids.add(hospital_id)
+                    id_map[row["patient_id"]] = new_pid
+                    total_imports["Patient"] += 1
+
+                # 如果没有新患者则不必处理子表
+                if id_map:
+                    # 获取新患者源ID列表字符串用于IN语句
+                    src_ids_list = ",".join(str(pid) for pid in id_map.keys())
+
+                    # 导入 Surgery
                     try:
-                        thread_db.conn.close()
-                    except Exception:
+                        cur_surg = src_conn.execute(
+                            f"SELECT * FROM Surgery WHERE patient_id IN ({src_ids_list})"
+                        )
+                        for srow in cur_surg:
+                            src_pid = srow["patient_id"]
+                            dest_pid = id_map.get(src_pid)
+                            if not dest_pid:
+                                continue
+                            surgery_data = dict(srow)
+                            surgery_data.pop("surgery_id", None)
+                            surgery_data.pop("patient_id", None)
+                            self.db.insert_surgery(dest_pid, surgery_data)
+                            total_imports["Surgery"] += 1
+                    except sqlite3.Error:
                         pass
 
-                # 回到主线程显示结果
-                def finish():
-                    if any(stats.values()):
-                        lines = [f"{tbl}: {cnt} 条" for tbl, cnt in stats.items() if cnt > 0]
-                        summary = "\n".join(lines)
-                        messagebox.showinfo(
-                            "导入完成",
-                            f"已成功导入以下数据：\n\n{summary}\n\n请刷新患者列表查看。",
+                    # 导入 Pathology
+                    try:
+                        cur_path = src_conn.execute(
+                            f"SELECT * FROM Pathology WHERE patient_id IN ({src_ids_list})"
                         )
-                        self.refresh_patient_list()
-                    else:
-                        messagebox.showinfo("导入完成", "未找到新数据或所有数据已存在。")
-                    self.status("数据库导入完成")
+                        for prow in cur_path:
+                            src_pid = prow["patient_id"]
+                            dest_pid = id_map.get(src_pid)
+                            if not dest_pid:
+                                continue
+                            path_data = dict(prow)
+                            path_data.pop("path_id", None)
+                            path_data.pop("patient_id", None)
+                            self.db.insert_pathology(dest_pid, path_data)
+                            total_imports["Pathology"] += 1
+                    except sqlite3.Error:
+                        pass
 
-                self.root.after(0, finish)
+                    # 导入 Molecular
+                    try:
+                        cur_mol = src_conn.execute(
+                            f"SELECT * FROM Molecular WHERE patient_id IN ({src_ids_list})"
+                        )
+                        for mrow in cur_mol:
+                            src_pid = mrow["patient_id"]
+                            dest_pid = id_map.get(src_pid)
+                            if not dest_pid:
+                                continue
+                            mol_data = dict(mrow)
+                            mol_data.pop("mol_id", None)
+                            mol_data.pop("patient_id", None)
+                            self.db.insert_molecular(dest_pid, mol_data)
+                            total_imports["Molecular"] += 1
+                    except sqlite3.Error:
+                        pass
 
+                    # 导入 FollowUpEvent
+                    try:
+                        cur_fue = src_conn.execute(
+                            f"SELECT * FROM FollowUpEvent WHERE patient_id IN ({src_ids_list})"
+                        )
+                        for evrow in cur_fue:
+                            try:
+                                src_pid = evrow["patient_id"]
+                                dest_pid = id_map.get(src_pid)
+                                if not dest_pid:
+                                    continue
+                                event_date = evrow["event_date"]
+                                event_type = evrow["event_type"]
+                                event_details = evrow.get("event_details", "")
+                                # v3.5.1: 忽略源 event_code，让系统自动生成新编码，避免冲突
+                                self.db.insert_followup_event(dest_pid, event_date, event_type, event_details, event_code=None)
+                                total_imports["FollowUpEvent"] += 1
+                            except sqlite3.Error:
+                                pass
+                    except sqlite3.Error:
+                        # v3.5.2: 如果没有 FollowUpEvent 表，尝试从旧版 FollowUp 表导入
+                        try:
+                            cur_fu = src_conn.execute(
+                                f"SELECT * FROM FollowUp WHERE patient_id IN ({src_ids_list})"
+                            )
+                            for furow in cur_fu:
+                                try:
+                                    src_pid = furow["patient_id"]
+                                    dest_pid = id_map.get(src_pid)
+                                    if not dest_pid:
+                                        continue
+                                    
+                                    # 转换旧版字段
+                                    last_visit = furow["last_visit_date"]
+                                    status = furow["status"]
+                                    death_date = furow["death_date"]
+                                    notes = furow["notes_fu"] or ""
+                                    
+                                    # 1. 如果有死亡日期，创建死亡事件
+                                    if death_date:
+                                        self.db.insert_followup_event(dest_pid, death_date, "死亡", f"旧版数据导入; {notes}", event_code=None)
+                                        total_imports["FollowUpEvent"] += 1
+                                    
+                                    # 2. 如果有末次随访日期，创建相应事件
+                                    if last_visit:
+                                        # 如果状态是死亡且日期相同，可能已在上面处理过，但为了保险起见，
+                                        # 如果日期不同或者是其他状态，则创建新记录
+                                        if last_visit != death_date:
+                                            # 确定事件类型
+                                            ev_type = "生存"
+                                            if status and "死亡" in status:
+                                                # 如果已经有 death_date 且日期不同，可能是一次复查
+                                                ev_type = "失访" if "失访" in status else "生存"
+                                            elif status and "失访" in status:
+                                                ev_type = "失访"
+                                            
+                                            detail_text = f"旧版数据导入 (状态:{status}); {notes}"
+                                            self.db.insert_followup_event(dest_pid, last_visit, ev_type, detail_text, event_code=None)
+                                            total_imports["FollowUpEvent"] += 1
+                                except sqlite3.Error:
+                                    pass
+                        except sqlite3.Error:
+                            pass
+
+                src_conn.close()
             except Exception as e:
-                # 报错信息在主线程弹框
-                def show_err():
-                    messagebox.showerror("导入错误", f"导入过程中出错：\n{e}")
-                    self.status("导入失败")
+                # 捕获每个文件的导入异常，但继续处理其他文件
+                messagebox.showerror("导入错误", f"导入 {source_db} 时出错：\n{str(e)}")
+                continue
 
-                self.root.after(0, show_err)
-
-        # 启动后台线程
-        threading.Thread(target=run_import, args=(source_dbs,), daemon=True).start()
+        # 显示导入结果
+        if any(total_imports.values()):
+            summary_lines = []
+            for table, count in total_imports.items():
+                if count > 0:
+                    summary_lines.append(f"{table}: {count} 条")
+            summary_text = "\n".join(summary_lines)
+            messagebox.showinfo(
+                "导入完成",
+                f"已成功导入以下数据：\n\n{summary_text}\n\n请刷新患者列表查看。"
+            )
+            self.refresh_patient_list()
+        else:
+            messagebox.showinfo("导入完成", "未找到新数据或所有数据已存在。")
+        
+        self.status("数据库导入完成")
     
     def show_about(self):
         """显示关于对话框"""
 
-        about_text = """胸外科科研数据录入系统
-
-版本：v3.2
-
-功能特点：
-• 患者信息管理（肺癌/食管癌）
-• 手术记录管理
-• 病理报告管理
-• 分子检测管理
-• 随访数据管理（事件驱动）
-• 数据导出（Excel/CSV）
-• 数据库导入：可以一次选择多个 SQLite 数据库导入新患者，按住院号合并新患者数据并统计导入结果，导入过程在后台线程执行
-• 模块化设计：导入逻辑抽离为独立模块，便于维护
-• 输入校验：新增住院号格式和日期格式验证，减少录入错误
-• 错误日志：导入过程中出现的错误会记录到 importer.log 文件，方便排查问题
-
-开发者信息：
-GitHub: xenorexq
-邮箱: qinzhi100@gmail.com
-
-© 2025 胸外科科研团队"""
-        
+        # 更新关于信息至 v3.5.2
+        about_text = (
+            "胸外科科研数据录入系统\n\n"
+            "版本：v3.5.2\n\n"
+            "功能特点：\n"
+            "• 全流程患者数据管理（肺癌/食管癌）\n"
+            "• 手术、病理、分子检测、随访等标签页均支持标准的新增/修改/删除，\n"
+            "  列表统一为\"住院号 + 日期\"结构，移除历史的编号列\n"
+            "• 全局状态管理：选择患者后，全局 current_patient_id 和 current_hospital_id 更新，\n"
+            "  各标签页同步，不再各自维护独立状态\n"
+            "• 数据导出（Excel/CSV），支持一键导出当前患者或整个数据库\n"
+            "• 数据库导入：按住院号合并新患者，避免编号冲突，多库导入时统计导入结果\n"
+            "• 查询与统计功能：快速查找患者、AJCC TNM 分期参考以及键盘快捷键支持\n\n"
+            "开发者信息：\n"
+            "GitHub: xenorexq\n"
+            "邮箱: qinzhi100@gmail.com\n\n"
+            "© 2025 胸外科科研团队"
+        )
         messagebox.showinfo("关于", about_text)
 
 
