@@ -1,0 +1,85 @@
+# -*- mode: python ; coding: utf-8 -*-
+# Debug spec file - with console output for troubleshooting
+
+block_cipher = None
+
+a = Analysis(
+    ['main_debug.py'],
+    pathex=[],
+    binaries=[],
+    datas=[
+        ('assets', 'assets'),
+        ('ui', 'ui'),
+        ('db', 'db'),
+        ('utils', 'utils'),
+        ('staging', 'staging'),
+        ('export', 'export'),
+        ('tkhtmlview', 'tkhtmlview'),
+    ],
+    hiddenimports=[
+        'ui.patient_tab',
+        'ui.surgery_tab',
+        'ui.path_tab',
+        'ui.mol_tab',
+        'ui.fu_tab',
+        'ui.export_tab',
+        'ui.import_preview_dialog',
+        'db.models',
+        'db.migrate',
+        'db.importer',
+        'db.import_checker',
+        'utils.validators',
+        'utils.db_health_checker',
+        'utils.field_validator',
+        'utils.logger',
+        'staging.lookup',
+        'export.excel',
+        'export.csv',
+        'export.parallel',
+        'tkinter',
+        'tkinter.ttk',
+        'tkinter.messagebox',
+        'tkinter.filedialog',
+        'tkinter.scrolledtext',
+        'sqlite3',
+        'openpyxl',
+        'ttkbootstrap',
+        'ttkbootstrap.constants',
+        'ttkbootstrap.themes',
+        'tkhtmlview',
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    [],
+    name='thoracic_debug',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=True,  # 启用控制台输出
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon=['assets/app.ico'],
+)
+

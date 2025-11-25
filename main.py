@@ -36,27 +36,12 @@ class ThoracicApp:
         self.root.geometry("1400x800")
 
         # 初始化数据库
-        self.db_path = Path("./thoracic.db")
+        # 使用 models.py 中定义的智能路径（适配 EXE 和开发环境）
+        self.db_path = DEFAULT_DB_PATH
         self.db = Database(self.db_path)
         
         # 执行数据库迁移
         migrate_database(self.db_path)
-
-        # 加载分期映射表 - 适配EXE环境
-        assets_dir = self._get_assets_dir()
-        load_mapping_from_csv(self.db, assets_dir)
-    
-    def _get_assets_dir(self) -> Path:
-        """获取assets目录路径，兼容开发环境和EXE环境"""
-        if getattr(sys, 'frozen', False):
-            # 运行在打包后的EXE环境
-            # assets文件被打包到 sys._MEIPASS 临时目录中
-            base_path = Path(sys._MEIPASS)
-        else:
-            # 开发环境
-            base_path = Path(__file__).parent
-        
-        return base_path / "assets"
 
         # 当前患者状态
         # 统一使用 patient_id 和 hospital_id 保存当前选中患者的标识
@@ -68,6 +53,10 @@ class ThoracicApp:
         # 操作状态标志（防止并发冲突）
         self.is_importing = False
         self.is_exporting = False
+        
+        # 加载分期映射表 - 适配EXE环境
+        assets_dir = self._get_assets_dir()
+        load_mapping_from_csv(self.db, assets_dir)
 
         # 创建主容器（使用PanedWindow实现左右分栏）
         main_paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
@@ -137,6 +126,18 @@ class ThoracicApp:
         
         # 初始加载患者列表
         self.refresh_patient_list()
+    
+    def _get_assets_dir(self) -> Path:
+        """获取assets目录路径，兼容开发环境和EXE环境"""
+        if getattr(sys, 'frozen', False):
+            # 运行在打包后的EXE环境
+            # assets文件被打包到 sys._MEIPASS 临时目录中
+            base_path = Path(sys._MEIPASS)
+        else:
+            # 开发环境
+            base_path = Path(__file__).parent
+        
+        return base_path / "assets"
 
     def _build_patient_list(self, parent):
         """构建左侧患者列表面板"""
@@ -1056,7 +1057,15 @@ def main():
 
     sys.excepthook = handle_exception
 
-    root = tb.Window(themename="cosmo")
+    # 尝试使用ttkbootstrap主题，如果失败则回退到标准tkinter
+    try:
+        root = tb.Window(themename="cosmo")
+        print("[INFO] 使用ttkbootstrap主题")
+    except Exception as e:
+        print(f"[WARNING] ttkbootstrap主题加载失败: {e}")
+        print("[INFO] 回退到标准tkinter")
+        root = tk.Tk()
+    
     app = ThoracicApp(root)
     root.mainloop()
 
