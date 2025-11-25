@@ -12,13 +12,15 @@ Requires openpyxl; ensure it is installed prior to packaging.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional, Callable
 
 from openpyxl import Workbook
 
 from db.models import Database
 # 引入日期格式化函数
 from utils.validators import format_date6, format_birth_ym4, format_birth_ym6
+# 引入并行处理工具
+from export.parallel import parallel_fetch_tables, ExportProgress
 # 引入分期查询函数
 # 已删除临床分期映射功能，不再导入 staging.lookup 中的分期函数
 
@@ -203,60 +205,83 @@ def _write_sheet(wb: Workbook, sheet_name: str, rows: Iterable[dict]) -> None:
         raise
 
 
-def export_patient_to_excel(db: Database, patient_id: int, file_path: Path) -> None:
-    """Export data for a single patient to an Excel file."""
+def export_patient_to_excel(
+    db: Database, 
+    patient_id: int, 
+    file_path: Path,
+    progress_callback: Optional[Callable[[float], None]] = None
+) -> None:
+    """Export data for a single patient to an Excel file.
+    
+    Args:
+        db: 数据库实例
+        patient_id: 患者 ID
+        file_path: 输出文件路径
+        progress_callback: 进度回调函数，接收 0-100 的进度值
+    """
     try:
         wb = Workbook()
         # Remove the default sheet created by openpyxl
         wb.remove(wb.active)
-        # Fetch rows per table
-        tables = ["Patient", "Surgery", "Pathology", "Molecular", "FollowUpEvent"]
-        # Fetch the patient once to obtain hospital_id.  Convert sqlite3.Row to dict
-        patient_row = db.get_patient_by_id(patient_id)
         
-        if not patient_row:
+        tables = ["Patient", "Surgery", "Pathology", "Molecular", "FollowUpEvent"]
+        
+        if progress_callback:
+            progress_callback(5)
+        
+        # 使用多线程并行获取所有表的数据
+        fetch_progress = ExportProgress(len(tables))
+        if progress_callback:
+            def fetch_progress_callback(p):
+                # 数据获取阶段占 70% 进度
+                progress_callback(5 + p * 0.7)
+            fetch_progress.set_callback(fetch_progress_callback)
+        
+        table_data = parallel_fetch_tables(
+            db, tables, patient_id=patient_id,
+            max_workers=min(4, len(tables)),
+            progress_tracker=fetch_progress
+        )
+        
+        # 获取患者的 hospital_id
+        patient_rows = table_data.get("Patient", [])
+        if not patient_rows:
             raise ValueError(f"Patient with ID {patient_id} not found")
         
-        # patient_dict_list is a list of dicts to feed into sheet writer
-        patient_dict_list: List[dict] = []
-        # Determine hospital_id from the converted dict
-        hospital_id = None
+        hospital_id = patient_rows[0].get("hospital_id")
         
-        pr_dict = dict(patient_row)
-        # 不再补充分期字段，直接使用患者行内容
-        patient_dict_list = [pr_dict]
-        hospital_id = pr_dict.get("hospital_id")
-        
-        for table in tables:
+        # 处理并写入每个表
+        write_progress_step = 30.0 / len(tables) if len(tables) > 0 else 0
+        for idx, table in enumerate(tables):
             try:
                 if table == "Patient":
-                    rows = patient_dict_list
+                    rows = patient_rows
                 else:
-                    # Many-to-one tables
-                    if table == "Surgery":
-                        items = db.get_surgeries_by_patient(patient_id)
-                    elif table == "Pathology":
-                        items = db.get_pathologies_by_patient(patient_id)
-                    elif table == "Molecular":
-                        items = db.get_molecular_by_patient(patient_id)
-                    elif table == "FollowUpEvent":
-                        items = db.get_followup_events(patient_id)
-                    else:
-                        items = []
-                    rows = []
-                    for row in items:
-                        rdict = dict(row)
-                        if hospital_id is not None:
-                            rdict = {"hospital_id": hospital_id, **rdict}
-                        rows.append(rdict)
+                    # Attach hospital_id to each row
+                    rows = table_data.get(table, [])
+                    if hospital_id is not None:
+                        for rdict in rows:
+                            rdict["hospital_id"] = hospital_id
+                
                 _write_sheet(wb, table, rows)
+                
+                if progress_callback:
+                    progress_callback(75 + (idx + 1) * write_progress_step)
+                    
             except Exception as e:
                 print(f"Warning: Failed to export table {table}: {e}")
                 continue
         
         # 确保目标目录存在
         file_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        if progress_callback:
+            progress_callback(95)
+        
         wb.save(file_path)
+        
+        if progress_callback:
+            progress_callback(100)
         
     except PermissionError as e:
         raise PermissionError(f"无法写入文件 {file_path}，请检查文件权限或文件是否被占用") from e
@@ -264,42 +289,81 @@ def export_patient_to_excel(db: Database, patient_id: int, file_path: Path) -> N
         raise Exception(f"导出Excel文件失败: {str(e)}") from e
 
 
-def export_all_to_excel(db: Database, file_path: Path) -> None:
-    """Export entire database to an Excel file (one sheet per table)."""
+def export_all_to_excel(
+    db: Database, 
+    file_path: Path, 
+    progress_callback: Optional[Callable[[float], None]] = None
+) -> None:
+    """Export entire database to an Excel file (one sheet per table).
+    
+    Args:
+        db: 数据库实例
+        file_path: 输出文件路径
+        progress_callback: 进度回调函数，接收 0-100 的进度值
+    """
     try:
         wb = Workbook()
         # Remove default sheet
         wb.remove(wb.active)
+        
+        tables = ["Patient", "Surgery", "Pathology", "Molecular", "FollowUpEvent"]
+        
+        # 创建进度跟踪器（数据获取占 70%，写入占 30%）
+        if progress_callback:
+            progress_callback(5)
+        
+        # 使用多线程并行获取所有表的数据
+        fetch_progress = ExportProgress(len(tables))
+        if progress_callback:
+            def fetch_progress_callback(p):
+                # 数据获取阶段占 70% 进度
+                progress_callback(5 + p * 0.7)
+            fetch_progress.set_callback(fetch_progress_callback)
+        
+        table_data = parallel_fetch_tables(
+            db, tables, patient_id=None, 
+            max_workers=min(4, len(tables)),
+            progress_tracker=fetch_progress
+        )
+        
         # Precompute mapping from patient_id to hospital_id
-        patient_rows = db.export_table("Patient")
+        patient_rows = table_data.get("Patient", [])
         pat_map = {}
-        for row in patient_rows:
-            rdict = dict(row)
+        for rdict in patient_rows:
             pat_map[rdict.get("patient_id")] = rdict.get("hospital_id")
         
-        # For each table, fetch all rows and attach hospital_id for non-Patient tables
-        for table in ["Patient", "Surgery", "Pathology", "Molecular", "FollowUpEvent"]:
+        # 处理并写入每个表
+        write_progress_step = 30.0 / len(tables) if len(tables) > 0 else 0
+        for idx, table in enumerate(tables):
             try:
-                rows = db.export_table(table)
-                rows_dicts: List[dict] = []
-                for row in rows:
-                    rdict = dict(row)
-                    if table == "Patient":
-                        # 不再补充分期字段。患者行直接使用原字段
-                        pass
-                    else:
+                rows_dicts: List[dict] = table_data.get(table, [])
+                
+                # Attach hospital_id for non-Patient tables
+                if table != "Patient":
+                    for rdict in rows_dicts:
                         pid = rdict.get("patient_id")
                         if pid in pat_map:
-                            rdict = {"hospital_id": pat_map[pid], **rdict}
-                    rows_dicts.append(rdict)
+                            rdict["hospital_id"] = pat_map[pid]
+                
                 _write_sheet(wb, table, rows_dicts)
+                
+                if progress_callback:
+                    progress_callback(75 + (idx + 1) * write_progress_step)
+                    
             except Exception as e:
                 print(f"Warning: Failed to export table {table}: {e}")
                 continue
         
         # 确保目标目录存在
         file_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        if progress_callback:
+            progress_callback(95)
+        
         wb.save(file_path)
+        
+        if progress_callback:
+            progress_callback(100)
         
     except PermissionError as e:
         raise PermissionError(f"无法写入文件 {file_path}，请检查文件权限或文件是否被占用") from e

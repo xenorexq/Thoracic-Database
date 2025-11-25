@@ -341,30 +341,45 @@ class PathologyTab(ttk.Frame):
         if not self.app.current_patient_id:
             messagebox.showerror("错误", "请先选择或保存患者")
             return
+        
+        # 安全的类型转换函数
+        def safe_int(value, field_name=""):
+            if not value:
+                return None
+            try:
+                return int(value)
+            except (ValueError, TypeError):
+                raise ValueError(f"字段【{field_name}】'{value}' 不是有效的整数")
+        
         # 构造字典，转换空字符串为 None
-        data = {
-            "specimen_type": self.specimen_var.get() or None,
-            "histology": self.histology_var.get() or None,
-            "differentiation": self.diff_var.get() or None,
-            "pt": self.pt_var.get() or None,
-            "pn": self.pn_var.get() or None,
-            "pm": self.pm_var.get() or None,
-            "p_stage": self.p_stage_var.get() or None,
-            "lvi": self.lvi_var.get(),
-            "pni": self.pni_var.get(),
-            "pleural_invasion": self.pl_inv_var.get(),
-            "airway_spread": self.airway_var.get(),
-            "ln_total": int(self.ln_total_var.get()) if self.ln_total_var.get() else None,
-            "ln_positive": int(self.ln_pos_var.get()) if self.ln_pos_var.get() else None,
-            # TRG 转换: 首先检查是否选择了有效数字选项
-            "trg": self._parse_trg(),
-            "pathology_no": self.pathology_no_var.get() or None,
-            # 新增：病理日期
-            "pathology_date": self.pathology_date_var.get() or None,
-            "notes_path": self.notes_text.get("1.0", tk.END).strip() or None,
-            # 新增肺腺癌主要亚型
-            "aden_subtype": self.aden_subtype_var.get() or None,
-        }
+        try:
+            data = {
+                "specimen_type": self.specimen_var.get() or None,
+                "histology": self.histology_var.get() or None,
+                "differentiation": self.diff_var.get() or None,
+                "pt": self.pt_var.get() or None,
+                "pn": self.pn_var.get() or None,
+                "pm": self.pm_var.get() or None,
+                "p_stage": self.p_stage_var.get() or None,
+                "lvi": self.lvi_var.get(),
+                "pni": self.pni_var.get(),
+                "pleural_invasion": self.pl_inv_var.get(),
+                "airway_spread": self.airway_var.get(),
+                "ln_total": safe_int(self.ln_total_var.get(), "淋巴结总数"),
+                "ln_positive": safe_int(self.ln_pos_var.get(), "阳性淋巴结数"),
+                # TRG 转换: 首先检查是否选择了有效数字选项
+                "trg": self._parse_trg(),
+                "pathology_no": self.pathology_no_var.get() or None,
+                # 新增：病理日期
+                "pathology_date": self.pathology_date_var.get() or None,
+                "notes_path": self.notes_text.get("1.0", tk.END).strip() or None,
+                # 新增肺腺癌主要亚型
+                "aden_subtype": self.aden_subtype_var.get() or None,
+            }
+        except ValueError as ve:
+            messagebox.showerror("数据格式错误", str(ve))
+            return
+        
         try:
             # 根据当前记录 ID 决定新增还是更新
             if self.current_record_id is None:

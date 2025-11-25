@@ -15,6 +15,8 @@ from db.models import Database
 from utils.validators import validate_birth_ym6, format_birth_ym6, validate_date6
 # 已弃用 TNM 分期映射功能，不再导入 get_lung_stage/get_eso_stage
 from tkhtmlview import HTMLScrolledText
+from utils.logger import log_debug, log_error, log_info
+from utils.field_validator import PatientDataValidator, safe_str
 
 
 class PatientTab(ttk.Frame):
@@ -631,52 +633,21 @@ class PatientTab(ttk.Frame):
 
     def save_patient(self):
         """保存患者信息"""
-        # 验证必填字段
+        # 收集所有字段数据（用于验证）
         hospital_id = self.hospital_id_var.get().strip()
         cancer_type = self.cancer_var.get()
         sex = self.sex_var.get()
-
-        if not hospital_id:
-            messagebox.showerror("错误", "住院号为必填项")
-            return
-        if not cancer_type:
-            messagebox.showerror("错误", "癌种为必填项")
-            return
-        if not sex:
-            messagebox.showerror("错误", "性别为必填项")
-            return
-
-        # 验证出生年月 (6位: yyyymm)
         birth_val = self.birth_var.get().strip()
-        if birth_val:
-            ok, msg = validate_birth_ym6(birth_val)
-            if not ok:
-                messagebox.showerror("错误", msg)
-                return
-
-        # 验证治疗日期 (可选项，格式需为 yymmdd)
         nac_date_val = self.nac_date_var.get().strip()
-        if nac_date_val:
-            ok, msg = validate_date6(nac_date_val)
-            if not ok:
-                messagebox.showerror("错误", f"新辅助治疗日期格式错误：{msg}")
-                return
-
         adj_date_val = self.adj_date_var.get().strip()
-        if adj_date_val:
-            ok, msg = validate_date6(adj_date_val)
-            if not ok:
-                messagebox.showerror("错误", f"辅助治疗日期格式错误：{msg}")
-                return
-
+        
         # 构建数据字典
         data = {
             "hospital_id": hospital_id,
             "cancer_type": cancer_type,
             "sex": sex,
-            # 存储出生年月到原 birth_ym4 字段中，虽然字段名包含 4，但此处可保存 6 位字符串
             "birth_ym4": birth_val or None,
-            "pack_years": float(self.pack_years_var.get()) if self.pack_years_var.get().strip() else None,
+            "pack_years": self.pack_years_var.get().strip() or None,
             "multi_primary": self.multi_primary_var.get(),
             "lung_t": self.lung_t_var.get() or None,
             "lung_n": self.lung_n_var.get() or None,
@@ -687,39 +658,63 @@ class PatientTab(ttk.Frame):
             "eso_histology": self.eso_hist_var.get() or None,
             "eso_grade": self.eso_grade_var.get() or None,
             "eso_location": self.eso_loc_var.get() or None,
-            "eso_from_incisors_cm": float(self.eso_from_incisors_var.get()) if self.eso_from_incisors_var.get().strip() else None,
+            "eso_from_incisors_cm": self.eso_from_incisors_var.get().strip() or None,
             "nac_chemo": self.nac_chemo_var.get(),
-            "nac_chemo_cycles": int(self.nac_chemo_cycles_var.get()) if self.nac_chemo_cycles_var.get().strip() else None,
+            "nac_chemo_cycles": self.nac_chemo_cycles_var.get().strip() or None,
             "nac_immuno": self.nac_immuno_var.get(),
-            "nac_immuno_cycles": int(self.nac_immuno_cycles_var.get()) if self.nac_immuno_cycles_var.get().strip() else None,
+            "nac_immuno_cycles": self.nac_immuno_cycles_var.get().strip() or None,
             "nac_targeted": self.nac_targeted_var.get(),
-            "nac_targeted_cycles": int(self.nac_targeted_cycles_var.get()) if self.nac_targeted_cycles_var.get().strip() else None,
-            # 新辅助放疗勾选
+            "nac_targeted_cycles": self.nac_targeted_cycles_var.get().strip() or None,
             "nac_radiation": self.nac_radiation_var.get(),
-            # 新辅助抗血管治疗
             "nac_antiangio": self.nac_antiangio_var.get(),
-            "nac_antiangio_cycles": int(self.nac_antiangio_cycles_var.get()) if self.nac_antiangio_cycles_var.get().strip() else None,
-            # 新辅助治疗日期
+            "nac_antiangio_cycles": self.nac_antiangio_cycles_var.get().strip() or None,
             "nac_date": nac_date_val or None,
             "adj_chemo": self.adj_chemo_var.get(),
-            "adj_chemo_cycles": int(self.adj_chemo_cycles_var.get()) if self.adj_chemo_cycles_var.get().strip() else None,
+            "adj_chemo_cycles": self.adj_chemo_cycles_var.get().strip() or None,
             "adj_immuno": self.adj_immuno_var.get(),
-            "adj_immuno_cycles": int(self.adj_immuno_cycles_var.get()) if self.adj_immuno_cycles_var.get().strip() else None,
+            "adj_immuno_cycles": self.adj_immuno_cycles_var.get().strip() or None,
             "adj_targeted": self.adj_targeted_var.get(),
-            "adj_targeted_cycles": int(self.adj_targeted_cycles_var.get()) if self.adj_targeted_cycles_var.get().strip() else None,
-            # 辅助放疗勾选
+            "adj_targeted_cycles": self.adj_targeted_cycles_var.get().strip() or None,
             "adj_radiation": self.adj_radiation_var.get(),
-            # 辅助抗血管治疗
             "adj_antiangio": self.adj_antiangio_var.get(),
-            "adj_antiangio_cycles": int(self.adj_antiangio_cycles_var.get()) if self.adj_antiangio_cycles_var.get().strip() else None,
-            # 辅助治疗日期
+            "adj_antiangio_cycles": self.adj_antiangio_cycles_var.get().strip() or None,
             "adj_date": adj_date_val or None,
             "notes_patient": self.notes_patient_var.get() or None,
-            # 糖尿病史
             "diabetes_history": self.diabetes_history_var.get(),
-            # 家族恶性肿瘤史
             "family_history": self.family_history_var.get(),
         }
+        
+        # ===== 使用验证器进行全面验证 =====
+        log_debug(f"开始验证患者数据: hospital_id={hospital_id}")
+        validation_errors = PatientDataValidator.validate_patient_data(data)
+        
+        if validation_errors:
+            # 有验证错误，显示详细的错误信息
+            error_message = PatientDataValidator.format_errors(validation_errors)
+            log_error(f"患者数据验证失败:\n{error_message}")
+            messagebox.showerror("数据验证失败", error_message)
+            return
+        
+        log_debug("患者数据验证通过")
+        
+        # ===== 转换数字字段 =====
+        # 只有验证通过后才进行类型转换
+        try:
+            if data["pack_years"]:
+                data["pack_years"] = float(data["pack_years"])
+            if data["eso_from_incisors_cm"]:
+                data["eso_from_incisors_cm"] = float(data["eso_from_incisors_cm"])
+            
+            # 转换周期数为整数
+            for field in ["nac_chemo_cycles", "nac_immuno_cycles", "nac_targeted_cycles", "nac_antiangio_cycles",
+                         "adj_chemo_cycles", "adj_immuno_cycles", "adj_targeted_cycles", "adj_antiangio_cycles"]:
+                if data[field]:
+                    data[field] = int(data[field])
+                    
+        except (ValueError, TypeError) as e:
+            log_error(f"数字字段转换失败: {e}")
+            messagebox.showerror("错误", f"数字字段转换失败：{e}")
+            return
 
         try:
             # 在保存时统一决定 patient_id：
@@ -727,100 +722,147 @@ class PatientTab(ttk.Frame):
             # 2. 否则尝试根据住院号查询现有患者；
             # 3. 若仍不存在，则新建。
             pid: Optional[int] = None
+            
+            # 日志：记录保存开始
+            log_debug(f"开始保存患者: hospital_id={hospital_id}, current_patient_id={self.current_patient_id}")
+            
             if self.current_patient_id:
                 pid = self.current_patient_id
+                log_debug(f"使用当前患者ID: {pid}")
             else:
+                log_debug(f"查询已存在的患者: {hospital_id}")
                 existing = self.db.get_patient_by_hospital_id(hospital_id)
                 if existing:
-                    # 注意：数据库中列名为 patient_id
-                    pid = existing.get("patient_id") or existing.get("id")
+                    try:
+                        # 将 sqlite3.Row 转换为字典以确保跨环境兼容性
+                        existing_dict = dict(existing)
+                        pid = existing_dict.get("patient_id")
+                        log_debug(f"找到现有患者ID: {pid}")
+                    except Exception as conv_err:
+                        log_error(f"转换sqlite3.Row失败: {conv_err}")
+                        # 备用方案：直接使用索引访问
+                        try:
+                            pid = existing["patient_id"]
+                            log_debug(f"使用索引访问获得患者ID: {pid}")
+                        except Exception as idx_err:
+                            log_error(f"索引访问也失败: {idx_err}")
+                            raise Exception(f"无法获取患者ID: {conv_err}")
+                else:
+                    log_debug(f"未找到现有患者，将创建新患者")
 
             if pid:
                 # 执行更新
+                log_debug(f"更新患者 ID={pid}")
                 self.db.update_patient(pid, data)
                 self.current_patient_id = pid
                 self.app.current_patient_id = pid
+                log_info(f"患者信息已更新: ID={pid}, hospital_id={hospital_id}")
                 messagebox.showinfo("成功", "患者信息已更新")
             else:
                 # 新建患者
+                log_debug(f"创建新患者")
                 pid = self.db.insert_patient(data)
                 self.current_patient_id = pid
                 self.app.current_patient_id = pid
+                log_info(f"患者已创建: ID={pid}, hospital_id={hospital_id}")
                 messagebox.showinfo("成功", f"患者已创建，ID: {pid}")
 
             # 刷新患者列表并高亮当前患者
+            log_debug(f"刷新患者列表")
             self.app.refresh_patient_list(self.current_patient_id)
             
             # 全局重新加载患者数据，确保 app.current_hospital_id 等状态更新，
             # 并且同步刷新所有标签页（包括 Surgery, Pathology 等）
+            log_debug(f"重新加载患者数据")
             self.app.load_patient(self.current_patient_id)
             
             self.app.status(f"已保存患者: {hospital_id}")
+            log_debug(f"患者保存完成")
+            
         except Exception as e:
-            # 捕获所有异常并提示用户
-            messagebox.showerror("错误", f"保存失败: {str(e)}")
+            # 捕获所有异常并提示用户，包含详细的堆栈跟踪
+            log_error(f"保存患者失败: {str(e)}", e)
+            
+            # 提供详细的错误信息和建议
+            error_message = (
+                f"保存失败:\n\n"
+                f"{str(e)}\n\n"
+                f"详细错误信息已记录到 app.log 文件\n\n"
+                f"可能的原因：\n"
+                f"• 上一次操作未正确完成\n"
+                f"• 数据库处于锁定状态\n"
+                f"• 存在数据一致性问题\n\n"
+                f"建议操作：\n"
+                f"1. 查看 app.log 了解详细错误\n"
+                f"2. 运行「文件 → 数据库健康检查」\n"
+                f"3. 尝试重启程序"
+            )
+            
+            # 询问是否运行健康检查
+            if messagebox.askyesno(
+                "保存失败",
+                error_message + "\n\n是否立即运行数据库健康检查？"
+            ):
+                self.app.check_database_health()
 
     def load_patient(self, patient_dict: Dict):
-        """加载患者数据"""
+        """加载患者数据（使用safe_str避免显示None字符串）"""
         self.current_patient_id = patient_dict.get("patient_id")
         
-        self.hospital_id_var.set(patient_dict.get("hospital_id", ""))
-        self.cancer_var.set(patient_dict.get("cancer_type", ""))
-        self.sex_var.set(patient_dict.get("sex", ""))
-        self.birth_var.set(patient_dict.get("birth_ym4", ""))
-        self.pack_years_var.set(patient_dict.get("pack_years", ""))
+        log_debug(f"加载患者数据: patient_id={self.current_patient_id}")
+        
+        # 使用 safe_str 函数确保不会显示 "None"
+        self.hospital_id_var.set(safe_str(patient_dict.get("hospital_id")))
+        self.cancer_var.set(safe_str(patient_dict.get("cancer_type")))
+        self.sex_var.set(safe_str(patient_dict.get("sex")))
+        self.birth_var.set(safe_str(patient_dict.get("birth_ym4")))
+        self.pack_years_var.set(safe_str(patient_dict.get("pack_years")))
         self.multi_primary_var.set(patient_dict.get("multi_primary", 0))
         self.diabetes_history_var.set(patient_dict.get("diabetes_history", 0))
-
-        # 家族恶性肿瘤史
         self.family_history_var.set(patient_dict.get("family_history", 0))
         
-        self.lung_t_var.set(patient_dict.get("lung_t", ""))
-        self.lung_n_var.set(patient_dict.get("lung_n", ""))
-        self.lung_m_var.set(patient_dict.get("lung_m", ""))
+        self.lung_t_var.set(safe_str(patient_dict.get("lung_t")))
+        self.lung_n_var.set(safe_str(patient_dict.get("lung_n")))
+        self.lung_m_var.set(safe_str(patient_dict.get("lung_m")))
         
-        self.eso_t_var.set(patient_dict.get("eso_t", ""))
-        self.eso_n_var.set(patient_dict.get("eso_n", ""))
-        self.eso_m_var.set(patient_dict.get("eso_m", ""))
-        self.eso_hist_var.set(patient_dict.get("eso_histology", ""))
-        self.eso_grade_var.set(patient_dict.get("eso_grade", ""))
-        self.eso_loc_var.set(patient_dict.get("eso_location", ""))
-        self.eso_from_incisors_var.set(patient_dict.get("eso_from_incisors_cm") or "")
+        self.eso_t_var.set(safe_str(patient_dict.get("eso_t")))
+        self.eso_n_var.set(safe_str(patient_dict.get("eso_n")))
+        self.eso_m_var.set(safe_str(patient_dict.get("eso_m")))
+        self.eso_hist_var.set(safe_str(patient_dict.get("eso_histology")))
+        self.eso_grade_var.set(safe_str(patient_dict.get("eso_grade")))
+        self.eso_loc_var.set(safe_str(patient_dict.get("eso_location")))
+        self.eso_from_incisors_var.set(safe_str(patient_dict.get("eso_from_incisors_cm")))
         
         self.nac_chemo_var.set(patient_dict.get("nac_chemo", 0))
-        self.nac_chemo_cycles_var.set(patient_dict.get("nac_chemo_cycles") or "")
+        self.nac_chemo_cycles_var.set(safe_str(patient_dict.get("nac_chemo_cycles")))
         self.nac_immuno_var.set(patient_dict.get("nac_immuno", 0))
-        self.nac_immuno_cycles_var.set(patient_dict.get("nac_immuno_cycles") or "")
+        self.nac_immuno_cycles_var.set(safe_str(patient_dict.get("nac_immuno_cycles")))
         self.nac_targeted_var.set(patient_dict.get("nac_targeted", 0))
-        self.nac_targeted_cycles_var.set(patient_dict.get("nac_targeted_cycles") or "")
-        # 新辅助放疗
+        self.nac_targeted_cycles_var.set(safe_str(patient_dict.get("nac_targeted_cycles")))
         self.nac_radiation_var.set(patient_dict.get("nac_radiation", 0))
-        # 新辅助抗血管治疗
         self.nac_antiangio_var.set(patient_dict.get("nac_antiangio", 0))
-        self.nac_antiangio_cycles_var.set(patient_dict.get("nac_antiangio_cycles") or "")
-        # 新辅助治疗日期
-        self.nac_date_var.set(patient_dict.get("nac_date") or "")
+        self.nac_antiangio_cycles_var.set(safe_str(patient_dict.get("nac_antiangio_cycles")))
+        self.nac_date_var.set(safe_str(patient_dict.get("nac_date")))
         
         self.adj_chemo_var.set(patient_dict.get("adj_chemo", 0))
-        self.adj_chemo_cycles_var.set(patient_dict.get("adj_chemo_cycles") or "")
+        self.adj_chemo_cycles_var.set(safe_str(patient_dict.get("adj_chemo_cycles")))
         self.adj_immuno_var.set(patient_dict.get("adj_immuno", 0))
-        self.adj_immuno_cycles_var.set(patient_dict.get("adj_immuno_cycles") or "")
+        self.adj_immuno_cycles_var.set(safe_str(patient_dict.get("adj_immuno_cycles")))
         self.adj_targeted_var.set(patient_dict.get("adj_targeted", 0))
-        self.adj_targeted_cycles_var.set(patient_dict.get("adj_targeted_cycles") or "")
-        # 辅助放疗
+        self.adj_targeted_cycles_var.set(safe_str(patient_dict.get("adj_targeted_cycles")))
         self.adj_radiation_var.set(patient_dict.get("adj_radiation", 0))
-        # 辅助抗血管治疗
         self.adj_antiangio_var.set(patient_dict.get("adj_antiangio", 0))
-        self.adj_antiangio_cycles_var.set(patient_dict.get("adj_antiangio_cycles") or "")
-        # 辅助治疗日期
-        self.adj_date_var.set(patient_dict.get("adj_date") or "")
+        self.adj_antiangio_cycles_var.set(safe_str(patient_dict.get("adj_antiangio_cycles")))
+        self.adj_date_var.set(safe_str(patient_dict.get("adj_date")))
         
-        self.notes_patient_var.set(patient_dict.get("notes_patient") or "")
+        self.notes_patient_var.set(safe_str(patient_dict.get("notes_patient")))
         
         # 触发癌种变改事件
         cancer_type = patient_dict.get("cancer_type", "")
         if cancer_type:
             self.on_cancer_type_change(cancer_type)
+        
+        log_debug("患者数据加载完成")
 
     def clear_form(self):
         """清空表单"""

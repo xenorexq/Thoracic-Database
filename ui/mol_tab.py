@@ -280,30 +280,52 @@ class MolecularTab(ttk.Frame):
             if not ok:
                 messagebox.showerror("错误", msg)
                 return
+        # 安全的类型转换函数
+        def safe_float(value, field_name=""):
+            if not value:
+                return None
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                raise ValueError(f"字段【{field_name}】'{value}' 不是有效的数字")
+        
+        def safe_int(value, field_name=""):
+            if not value:
+                return None
+            try:
+                return int(value)
+            except (ValueError, TypeError):
+                raise ValueError(f"字段【{field_name}】'{value}' 不是有效的整数")
+        
         # build data dict with dynamic fields
-        data = {
-            "platform": self.platform_var.get() or None,
-            # 根据最新需求，不再保存检测机构信息（vendor_lab）。如果更新旧记录，不提供 vendor_lab 字段即可保持原值。
-            "gene": self.gene_var.get() or None,
-            "variant": self.variant_var.get() or None,
-            "pdl1_percent": float(self.pdl1_var.get()) if self.pdl1_var.get() else None,
-            "tmb_msi": self.tmb_var.get() or None,
-            "test_date": date6 or None,
-            "notes_mol": self.notes_text.get("1.0", tk.END).strip() or None,
-        }
-        # include CTC or methylation results depending on platform
-        plat = self.platform_var.get()
-        if plat == "CTC":
-            # convert to int if possible
-            cnt = self.ctc_count_var.get().strip()
-            data["ctc_count"] = int(cnt) if cnt else None
-            data["methylation_result"] = None
-        elif plat == "METHYLATION":
-            data["ctc_count"] = None
-            data["methylation_result"] = self.methylation_var.get() or None
-        else:
-            data["ctc_count"] = None
-            data["methylation_result"] = None
+        try:
+            data = {
+                "platform": self.platform_var.get() or None,
+                # 根据最新需求，不再保存检测机构信息（vendor_lab）。如果更新旧记录，不提供 vendor_lab 字段即可保持原值。
+                "gene": self.gene_var.get() or None,
+                "variant": self.variant_var.get() or None,
+                "pdl1_percent": safe_float(self.pdl1_var.get(), "PD-L1百分比"),
+                "tmb_msi": self.tmb_var.get() or None,
+                "test_date": date6 or None,
+                "notes_mol": self.notes_text.get("1.0", tk.END).strip() or None,
+            }
+            # include CTC or methylation results depending on platform
+            plat = self.platform_var.get()
+            if plat == "CTC":
+                # convert to int if possible
+                cnt = self.ctc_count_var.get().strip()
+                data["ctc_count"] = safe_int(cnt, "CTC计数")
+                data["methylation_result"] = None
+            elif plat == "METHYLATION":
+                data["ctc_count"] = None
+                data["methylation_result"] = self.methylation_var.get() or None
+            else:
+                data["ctc_count"] = None
+                data["methylation_result"] = None
+        except ValueError as ve:
+            messagebox.showerror("数据格式错误", str(ve))
+            return
+        
         try:
             # 根据当前记录 ID 决定新增或更新
             if self.current_record_id is None:

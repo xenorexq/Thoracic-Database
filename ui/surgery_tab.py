@@ -369,28 +369,47 @@ class SurgeryTab(ttk.Frame):
                 messagebox.showerror("错误", f"结束时间: {msg}")
                 return
         dur = compute_duration(self.start_var.get(), self.end_var.get()) if self.start_var.get() and self.end_var.get() else None
-        data = {
-            "cancer_type": self.app.cancer_type or self.cancer_type,
-            "surgery_date6": date6,
-            "indication": self.indication_var.get() or None,
-            "planned": self.planned_var.get(),
-            "completed": self.completed_var.get(),
-            "start_hhmm": int(self.start_var.get()) if self.start_var.get() else None,
-            "end_hhmm": int(self.end_var.get()) if self.end_var.get() else None,
-            "duration_min": dur,
-            "ln_dissection": self.ln_dissect_var.get(),
-            "r0": self.r0_var.get(),
-            "approach": self.approach_var.get() or None,
-            "scope_lung": self.scope_var.get() or None,
-            "lobe": self.lobe_var.get() or None,
-            "left_side": self.left_var.get(),
-            "right_side": self.right_var.get(),
-            "bilateral": self.bilateral_var.get(),
-            "lesion_count": int(self.lesion_count_var.get()) if self.lesion_count_var.get() else None,
-            "main_lesion_size_cm": float(self.main_size_var.get()) if self.main_size_var.get() else None,
-            "esophagus_site": self.eso_site_var.get() or None,
-            "notes_surgery": self.notes_text.get("1.0", tk.END).strip() or None,
-        }
+        
+        # 安全的类型转换函数
+        def safe_int(value):
+            try:
+                return int(value) if value else None
+            except (ValueError, TypeError):
+                raise ValueError(f"'{value}' 不是有效的整数")
+        
+        def safe_float(value):
+            try:
+                return float(value) if value else None
+            except (ValueError, TypeError):
+                raise ValueError(f"'{value}' 不是有效的数字")
+        
+        try:
+            data = {
+                "cancer_type": self.app.cancer_type or self.cancer_type,
+                "surgery_date6": date6,
+                "indication": self.indication_var.get() or None,
+                "planned": self.planned_var.get(),
+                "completed": self.completed_var.get(),
+                "start_hhmm": safe_int(self.start_var.get()),
+                "end_hhmm": safe_int(self.end_var.get()),
+                "duration_min": dur,
+                "ln_dissection": self.ln_dissect_var.get(),
+                "r0": self.r0_var.get(),
+                "approach": self.approach_var.get() or None,
+                "scope_lung": self.scope_var.get() or None,
+                "lobe": self.lobe_var.get() or None,
+                "left_side": self.left_var.get(),
+                "right_side": self.right_var.get(),
+                "bilateral": self.bilateral_var.get(),
+                "lesion_count": safe_int(self.lesion_count_var.get()),
+                "main_lesion_size_cm": safe_float(self.main_size_var.get()),
+                "esophagus_site": self.eso_site_var.get() or None,
+                "notes_surgery": self.notes_text.get("1.0", tk.END).strip() or None,
+            }
+        except ValueError as ve:
+            messagebox.showerror("数据格式错误", f"数据格式不正确：\n\n{str(ve)}")
+            return
+        
         try:
             # 根据当前记录 ID 决定新增还是更新
             if self.current_record_id is None:

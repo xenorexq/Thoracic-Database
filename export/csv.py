@@ -18,9 +18,11 @@ import csv
 
 from pathlib import Path
 
-from typing import Iterable, List
+from typing import Iterable, List, Optional, Callable
 
 from db.models import Database
+# 引入并行处理工具
+from export.parallel import parallel_fetch_tables, parallel_write_csv_files, ExportProgress
 
 # 引入日期格式化函数以统一导出中的日期格式
 
@@ -332,179 +334,173 @@ def _write_csv(path: Path, rows: Iterable[dict], table_name: str) -> None:
 
         raise Exception(f"导出CSV文件失败: {str(e)}") from e
 
-def export_patient_to_csv(db: Database, patient_id: int, dir_path: Path, prefix: str = None) -> List[Path]:
-
+def export_patient_to_csv(
+    db: Database, 
+    patient_id: int, 
+    dir_path: Path, 
+    prefix: str = None,
+    progress_callback: Optional[Callable[[float], None]] = None
+) -> List[Path]:
     """Export data for a single patient to CSV files (one file per table).
 
     Args:
-
         db: Database instance.
-
         patient_id: Primary key of the patient to export.
-
         dir_path: Directory where CSV files will be written.
-
         prefix: Optional prefix for file names (e.g. ``patient123``).
+        progress_callback: 进度回调函数，接收 0-100 的进度值
 
     Returns:
-
         List of file paths created.
-
     """
-
     try:
-
         files: List[Path] = []
-
         dir_path.mkdir(parents=True, exist_ok=True)
 
         if prefix is None:
-
             prefix = f"patient{patient_id}"
 
         tables = ["Patient", "Surgery", "Pathology", "Molecular", "FollowUpEvent"]
-
-        patient_row = db.get_patient_by_id(patient_id)
-
-        if not patient_row:
-
+        
+        if progress_callback:
+            progress_callback(5)
+        
+        # 使用多线程并行获取所有表的数据
+        fetch_progress = ExportProgress(len(tables))
+        if progress_callback:
+            def fetch_progress_callback(p):
+                # 数据获取阶段占 50% 进度
+                progress_callback(5 + p * 0.5)
+            fetch_progress.set_callback(fetch_progress_callback)
+        
+        table_data = parallel_fetch_tables(
+            db, tables, patient_id=patient_id,
+            max_workers=min(4, len(tables)),
+            progress_tracker=fetch_progress
+        )
+        
+        # 获取患者的 hospital_id
+        patient_rows = table_data.get("Patient", [])
+        if not patient_rows:
             raise ValueError(f"Patient with ID {patient_id} not found")
-
-        patient_dict_list: List[dict] = []
-
-        hospital_id = None
-
-        pr_dict = dict(patient_row)
-
-        # 不再补充分期字段，直接使用患者行内容
-
-        patient_dict_list = [pr_dict]
-
-        hospital_id = pr_dict.get("hospital_id")
-
+        
+        hospital_id = patient_rows[0].get("hospital_id")
+        
+        # 准备写入任务
+        file_tasks = []
         for table in tables:
-
-            try:
-
-                if table == "Patient":
-
-                    rows = patient_dict_list
-
-                else:
-
-                    if table == "Surgery":
-
-                        items = db.get_surgeries_by_patient(patient_id)
-
-                    elif table == "Pathology":
-
-                        items = db.get_pathologies_by_patient(patient_id)
-
-                    elif table == "Molecular":
-
-                        items = db.get_molecular_by_patient(patient_id)
-
-                    elif table == "FollowUpEvent":
-
-                        items = db.get_followup_events(patient_id)
-
-                    else:
-
-                        items = []
-
-                    rows = []
-
-                    for row in items:
-
-                        rdict = dict(row)
-
-                        if hospital_id is not None:
-
-                            rdict = {"hospital_id": hospital_id, **rdict}
-
-                        rows.append(rdict)
-
-                file_path = dir_path / f"{prefix}_{table}.csv"
-
-                _write_csv(file_path, rows, table)
-
-                files.append(file_path)
-
-            except Exception as e:
-
-                print(f"Warning: Failed to export table {table}: {e}")
-
-                continue
+            if table == "Patient":
+                rows = patient_rows
+            else:
+                # Attach hospital_id to each row
+                rows = table_data.get(table, [])
+                if hospital_id is not None:
+                    for rdict in rows:
+                        rdict["hospital_id"] = hospital_id
+            
+            file_path = dir_path / f"{prefix}_{table}.csv"
+            file_tasks.append((file_path, rows, table))
+        
+        # 使用多线程并行写入 CSV 文件
+        write_progress = ExportProgress(len(file_tasks))
+        if progress_callback:
+            def write_progress_callback(p):
+                # 文件写入阶段占 45% 进度
+                progress_callback(55 + p * 0.45)
+            write_progress.set_callback(write_progress_callback)
+        
+        files = parallel_write_csv_files(
+            file_tasks, _write_csv,
+            max_workers=min(4, len(file_tasks)),
+            progress_tracker=write_progress
+        )
+        
+        if progress_callback:
+            progress_callback(100)
 
         return files
 
     except Exception as e:
-
         raise Exception(f"导出患者CSV文件失败: {str(e)}") from e
 
-def export_all_to_csv(db: Database, dir_path: Path) -> List[Path]:
-
+def export_all_to_csv(
+    db: Database, 
+    dir_path: Path,
+    progress_callback: Optional[Callable[[float], None]] = None
+) -> List[Path]:
     """Export entire database to CSV files.
+    
+    Args:
+        db: 数据库实例
+        dir_path: 输出目录路径
+        progress_callback: 进度回调函数，接收 0-100 的进度值
 
-    Returns list of file paths created.
-
+    Returns:
+        成功创建的文件路径列表
     """
-
     try:
-
         files: List[Path] = []
-
         dir_path.mkdir(parents=True, exist_ok=True)
-
-        # Precompute mapping from patient_id to hospital_id for adding to other tables
-
-        patient_rows = db.export_table("Patient")
-
+        
+        tables = ["Patient", "Surgery", "Pathology", "Molecular", "FollowUpEvent"]
+        
+        if progress_callback:
+            progress_callback(5)
+        
+        # 使用多线程并行获取所有表的数据
+        fetch_progress = ExportProgress(len(tables))
+        if progress_callback:
+            def fetch_progress_callback(p):
+                # 数据获取阶段占 50% 进度
+                progress_callback(5 + p * 0.5)
+            fetch_progress.set_callback(fetch_progress_callback)
+        
+        table_data = parallel_fetch_tables(
+            db, tables, patient_id=None,
+            max_workers=min(4, len(tables)),
+            progress_tracker=fetch_progress
+        )
+        
+        # Precompute mapping from patient_id to hospital_id
+        patient_rows = table_data.get("Patient", [])
         pat_map = {}
-
-        for row in patient_rows:
-
-            row_dict = dict(row)
-
-            pat_map[row_dict.get("patient_id")] = row_dict.get("hospital_id")
-
-        for table in ["Patient", "Surgery", "Pathology", "Molecular", "FollowUpEvent"]:
-
-            try:
-
-                rows = db.export_table(table)
-
-                rows_dicts: List[dict] = []
-
-                for row in rows:
-
-                    rdict = dict(row)
-
-                    if table != "Patient":
-
-                        pid = rdict.get("patient_id")
-
-                        if pid in pat_map:
-
-                            rdict = {"hospital_id": pat_map[pid], **rdict}
-
-                    rows_dicts.append(rdict)
-
-                file_path = dir_path / f"{table}.csv"
-
-                _write_csv(file_path, rows_dicts, table)
-
-                files.append(file_path)
-
-            except Exception as e:
-
-                print(f"Warning: Failed to export table {table}: {e}")
-
-                continue
-
+        for rdict in patient_rows:
+            pat_map[rdict.get("patient_id")] = rdict.get("hospital_id")
+        
+        # 准备写入任务
+        file_tasks = []
+        for table in tables:
+            rows_dicts: List[dict] = table_data.get(table, [])
+            
+            # Attach hospital_id for non-Patient tables
+            if table != "Patient":
+                for rdict in rows_dicts:
+                    pid = rdict.get("patient_id")
+                    if pid in pat_map:
+                        rdict["hospital_id"] = pat_map[pid]
+            
+            file_path = dir_path / f"{table}.csv"
+            file_tasks.append((file_path, rows_dicts, table))
+        
+        # 使用多线程并行写入 CSV 文件
+        write_progress = ExportProgress(len(file_tasks))
+        if progress_callback:
+            def write_progress_callback(p):
+                # 文件写入阶段占 45% 进度
+                progress_callback(55 + p * 0.45)
+            write_progress.set_callback(write_progress_callback)
+        
+        files = parallel_write_csv_files(
+            file_tasks, _write_csv,
+            max_workers=min(4, len(file_tasks)),
+            progress_tracker=write_progress
+        )
+        
+        if progress_callback:
+            progress_callback(100)
+        
         return files
 
     except Exception as e:
-
         raise Exception(f"导出CSV文件失败: {str(e)}") from e
 

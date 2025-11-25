@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import sys, os
+import sqlite3
+import threading
+import shutil
+from datetime import datetime
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
 sys.path.insert(0, str(BASE_DIR))  # 关键:把项目根加入模块搜索路径
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 
@@ -89,7 +93,10 @@ class ThoracicApp:
         file_menu.add_command(label="新建患者 (Ctrl+N)", command=self.new_patient)
         file_menu.add_command(label="保存 (Ctrl+S)", command=self.save_current)
         file_menu.add_separator()
+        file_menu.add_command(label="备份数据库...", command=self.backup_database)
         file_menu.add_command(label="导入数据库...", command=self.import_database)
+        file_menu.add_separator()
+        file_menu.add_command(label="数据库健康检查...", command=self.check_database_health)
         file_menu.add_separator()
         file_menu.add_command(label="退出", command=self.root.quit)
         menubar.add_cascade(label="文件", menu=file_menu)
@@ -372,11 +379,56 @@ class ThoracicApp:
         """更新底部状态栏"""
         self.status_var.set(text)
     
+    def show_progress(self, show: bool):
+        """显示或隐藏进度条（线程安全）"""
+        if show:
+            # 如果已经存在且仍然有效，不重复创建
+            if hasattr(self, 'progress_window') and self.progress_window and self.progress_window.winfo_exists():
+                # 已经存在，重置进度
+                if hasattr(self, 'progress_bar'):
+                    self.progress_bar['value'] = 0
+                return
+            
+            # 创建新窗口
+            self.progress_window = tk.Toplevel(self.root)
+            self.progress_window.title("导入进度")
+            self.progress_window.geometry("400x100")
+            self.progress_window.resizable(False, False)
+            
+            # 居中显示
+            self.progress_window.transient(self.root)
+            self.progress_window.grab_set()
+            
+            label = ttk.Label(self.progress_window, text="正在导入数据，请稍候...", font=("Arial", 10))
+            label.pack(pady=10)
+            
+            self.progress_bar = ttk.Progressbar(
+                self.progress_window, 
+                mode='determinate',
+                length=350
+            )
+            self.progress_bar.pack(pady=10)
+            self.progress_bar['value'] = 0
+        else:
+            # 安全地关闭窗口
+            if hasattr(self, 'progress_window'):
+                try:
+                    if self.progress_window and self.progress_window.winfo_exists():
+                        self.progress_window.destroy()
+                except:
+                    pass
+                finally:
+                    self.progress_window = None
+                    self.progress_bar = None
+    
+    def update_progress(self, value: float):
+        """更新进度条的值（0-100）"""
+        if hasattr(self, 'progress_bar'):
+            self.progress_bar['value'] = value
+            self.progress_window.update()
+    
     def import_database(self):
-        """导入其他数据库并合并新患者数据 (多线程 + 事务批量提交版)"""
-        from tkinter import filedialog
-        import sqlite3
-
+        """导入其他数据库并合并新患者数据 (带预检查和确认对话框)"""
         # 允许多选多个数据库文件
         source_dbs = filedialog.askopenfilenames(
             title="选择要导入的数据库文件",
@@ -385,6 +437,37 @@ class ThoracicApp:
 
         if not source_dbs:
             return
+        
+        # === 第一阶段：预检查 ===
+        self.status("正在分析导入文件...")
+        
+        try:
+            from db.import_checker import check_source_databases
+            from ui.import_preview_dialog import show_import_preview
+            
+            source_paths = [Path(db) for db in source_dbs]
+            
+            # 执行预检查分析
+            analysis = check_source_databases(source_paths, self.db_path)
+            
+            # 显示预览对话框，等待用户确认
+            user_confirmed = show_import_preview(self.root, analysis)
+            
+            if not user_confirmed:
+                self.status("用户取消导入")
+                return
+            
+            # 如果没有新患者，直接返回
+            if analysis.new_patients == 0:
+                self.status("没有可导入的新患者")
+                return
+                
+        except Exception as e:
+            messagebox.showerror("预检查失败", f"分析导入文件时出错：\n{e}")
+            self.status("导入预检查失败")
+            return
+        
+        # === 第二阶段：执行导入 ===
 
         # 准备在后台线程中运行
         def run_import():
@@ -428,8 +511,8 @@ class ThoracicApp:
                         # 第一阶段：导入新患者并建立映射
                         # 使用事务：不在此处 commit，最后统一 commit
                         for i, row in enumerate(patient_rows):
-                            if i % 50 == 0: # 每50条更新一次进度条
-                                progress_val = (i / total_pats) * 100
+                            if i % 50 == 0 and total_pats > 0: # 每50条更新一次进度条
+                                progress_val = (i / total_pats) * 100 if total_pats > 0 else 0
                                 self.root.after(0, lambda v=progress_val: self.update_progress(v))
                                 
                             hospital_id = row["hospital_id"]
@@ -461,15 +544,19 @@ class ThoracicApp:
                                         f"SELECT * FROM Surgery WHERE patient_id IN ({src_ids_list})"
                                     )
                                     for srow in cur_surg:
-                                        src_pid = srow["patient_id"]
-                                        dest_pid = id_map.get(src_pid)
-                                        if not dest_pid: continue
-                                        surgery_data = dict(srow)
-                                        surgery_data.pop("surgery_id", None)
-                                        surgery_data.pop("patient_id", None)
-                                        self.db.insert_surgery(dest_pid, surgery_data, commit=False)
-                                        total_imports["Surgery"] += 1
-                                except sqlite3.Error: pass
+                                        try:
+                                            src_pid = srow["patient_id"]
+                                            dest_pid = id_map.get(src_pid)
+                                            if not dest_pid: continue
+                                            surgery_data = dict(srow)
+                                            surgery_data.pop("surgery_id", None)
+                                            surgery_data.pop("patient_id", None)
+                                            self.db.insert_surgery(dest_pid, surgery_data, commit=False)
+                                            total_imports["Surgery"] += 1
+                                        except Exception as surg_err:
+                                            print(f"[WARNING] 导入单条Surgery记录失败 (患者{dest_pid}): {surg_err}")
+                                except Exception as surg_table_err:
+                                    print(f"[WARNING] 导入Surgery表失败: {surg_table_err}")
 
                                 # 导入 Pathology
                                 try:
@@ -477,15 +564,19 @@ class ThoracicApp:
                                         f"SELECT * FROM Pathology WHERE patient_id IN ({src_ids_list})"
                                     )
                                     for prow in cur_path:
-                                        src_pid = prow["patient_id"]
-                                        dest_pid = id_map.get(src_pid)
-                                        if not dest_pid: continue
-                                        path_data = dict(prow)
-                                        path_data.pop("path_id", None)
-                                        path_data.pop("patient_id", None)
-                                        self.db.insert_pathology(dest_pid, path_data, commit=False)
-                                        total_imports["Pathology"] += 1
-                                except sqlite3.Error: pass
+                                        try:
+                                            src_pid = prow["patient_id"]
+                                            dest_pid = id_map.get(src_pid)
+                                            if not dest_pid: continue
+                                            path_data = dict(prow)
+                                            path_data.pop("path_id", None)
+                                            path_data.pop("patient_id", None)
+                                            self.db.insert_pathology(dest_pid, path_data, commit=False)
+                                            total_imports["Pathology"] += 1
+                                        except Exception as path_err:
+                                            print(f"[WARNING] 导入单条Pathology记录失败 (患者{dest_pid}): {path_err}")
+                                except Exception as path_table_err:
+                                    print(f"[WARNING] 导入Pathology表失败: {path_table_err}")
 
                                 # 导入 Molecular
                                 try:
@@ -493,15 +584,19 @@ class ThoracicApp:
                                         f"SELECT * FROM Molecular WHERE patient_id IN ({src_ids_list})"
                                     )
                                     for mrow in cur_mol:
-                                        src_pid = mrow["patient_id"]
-                                        dest_pid = id_map.get(src_pid)
-                                        if not dest_pid: continue
-                                        mol_data = dict(mrow)
-                                        mol_data.pop("mol_id", None)
-                                        mol_data.pop("patient_id", None)
-                                        self.db.insert_molecular(dest_pid, mol_data, commit=False)
-                                        total_imports["Molecular"] += 1
-                                except sqlite3.Error: pass
+                                        try:
+                                            src_pid = mrow["patient_id"]
+                                            dest_pid = id_map.get(src_pid)
+                                            if not dest_pid: continue
+                                            mol_data = dict(mrow)
+                                            mol_data.pop("mol_id", None)
+                                            mol_data.pop("patient_id", None)
+                                            self.db.insert_molecular(dest_pid, mol_data, commit=False)
+                                            total_imports["Molecular"] += 1
+                                        except Exception as mol_err:
+                                            print(f"[WARNING] 导入单条Molecular记录失败 (患者{dest_pid}): {mol_err}")
+                                except Exception as mol_table_err:
+                                    print(f"[WARNING] 导入Molecular表失败: {mol_table_err}")
 
                                 # 导入 FollowUpEvent
                                 try:
@@ -512,12 +607,19 @@ class ThoracicApp:
                                         src_pid = evrow["patient_id"]
                                         dest_pid = id_map.get(src_pid)
                                         if not dest_pid: continue
-                                        event_date = evrow["event_date"]
-                                        event_type = evrow["event_type"]
-                                        event_details = evrow.get("event_details", "")
-                                        self.db.insert_followup_event(dest_pid, event_date, event_type, event_details, event_code=None, commit=False)
-                                        total_imports["FollowUpEvent"] += 1
-                                except sqlite3.Error: pass
+                                        # 转换为dict确保兼容性
+                                        ev_dict = dict(evrow)
+                                        event_date = ev_dict.get("event_date")
+                                        event_type = ev_dict.get("event_type")
+                                        event_details = ev_dict.get("event_details", "")
+                                        if event_date and event_type:
+                                            self.db.insert_followup_event(dest_pid, event_date, event_type, event_details, event_code=None, commit=False)
+                                            total_imports["FollowUpEvent"] += 1
+                                except Exception as fue_err:
+                                    # 记录详细错误而非静默跳过
+                                    print(f"[WARNING] 导入FollowUpEvent失败: {fue_err}")
+                                    import traceback
+                                    traceback.print_exc()
                                 
                                 # 尝试导入旧版 FollowUp (兼容性)
                                 try:
@@ -525,31 +627,43 @@ class ThoracicApp:
                                         f"SELECT * FROM FollowUp WHERE patient_id IN ({src_ids_list})"
                                     )
                                     for furow in cur_fu:
-                                        src_pid = furow["patient_id"]
-                                        dest_pid = id_map.get(src_pid)
-                                        if not dest_pid: continue
-                                        last_visit = furow["last_visit_date"]
-                                        status = furow["status"]
-                                        death_date = furow["death_date"]
-                                        notes = furow["notes_fu"] or ""
-                                        if death_date:
-                                            self.db.insert_followup_event(dest_pid, death_date, "死亡", f"旧版数据导入; {notes}", event_code=None, commit=False)
-                                            total_imports["FollowUpEvent"] += 1
-                                        if last_visit and last_visit != death_date:
-                                            ev_type = "生存"
-                                            if status and "死亡" in status:
-                                                ev_type = "失访" if "失访" in status else "生存"
-                                            elif status and "失访" in status:
-                                                ev_type = "失访"
-                                            detail_text = f"旧版数据导入 (状态:{status}); {notes}"
-                                            self.db.insert_followup_event(dest_pid, last_visit, ev_type, detail_text, event_code=None, commit=False)
-                                            total_imports["FollowUpEvent"] += 1
-                                except sqlite3.Error: pass
+                                        try:
+                                            src_pid = furow["patient_id"]
+                                            dest_pid = id_map.get(src_pid)
+                                            if not dest_pid: continue
+                                            
+                                            # 转换为dict确保兼容性
+                                            fu_dict = dict(furow)
+                                            last_visit = fu_dict.get("last_visit_date")
+                                            status = fu_dict.get("status")
+                                            death_date = fu_dict.get("death_date")
+                                            notes = fu_dict.get("notes_fu") or ""
+                                            
+                                            if death_date:
+                                                self.db.insert_followup_event(dest_pid, death_date, "死亡", f"旧版数据导入; {notes}", event_code=None, commit=False)
+                                                total_imports["FollowUpEvent"] += 1
+                                            if last_visit and last_visit != death_date:
+                                                ev_type = "生存"
+                                                if status and "死亡" in status:
+                                                    ev_type = "失访" if "失访" in status else "生存"
+                                                elif status and "失访" in status:
+                                                    ev_type = "失访"
+                                                detail_text = f"旧版数据导入 (状态:{status}); {notes}"
+                                                self.db.insert_followup_event(dest_pid, last_visit, ev_type, detail_text, event_code=None, commit=False)
+                                                total_imports["FollowUpEvent"] += 1
+                                        except Exception as fu_err:
+                                            print(f"[WARNING] 导入单条旧版FollowUp记录失败 (患者{dest_pid}): {fu_err}")
+                                except Exception as fu_table_err:
+                                    print(f"[WARNING] 导入旧版FollowUp表失败（可能该表不存在）: {fu_table_err}")
 
-                        src_conn.close()
                     except Exception as e:
                         self.root.after(0, lambda err=str(e): messagebox.showerror("导入错误", f"导入 {source_db} 时出错：\n{err}"))
-                        continue
+                    finally:
+                        # 确保连接总是被关闭
+                        try:
+                            src_conn.close()
+                        except:
+                            pass
 
                 # 所有文件处理完毕，执行一次性提交
                 self.root.after(0, lambda: self.status("正在写入磁盘..."))
@@ -579,19 +693,204 @@ class ThoracicApp:
         # 启动线程
         threading.Thread(target=run_import, daemon=True).start()
     
+    def check_database_health(self):
+        """检查数据库健康状态"""
+        from utils.db_health_checker import DatabaseHealthChecker, quick_fix_database
+        
+        self.status("正在检查数据库健康状态...")
+        
+        try:
+            # 执行健康检查
+            checker = DatabaseHealthChecker(self.db_path)
+            result = checker.check_all()
+            
+            # 生成报告
+            report = checker.format_report(result)
+            
+            # 显示报告对话框
+            dialog = tk.Toplevel(self.root)
+            dialog.title("数据库健康检查报告")
+            dialog.geometry("700x500")
+            dialog.transient(self.root)
+            dialog.grab_set()
+            
+            # 报告文本框
+            from tkinter import scrolledtext
+            text_frame = ttk.Frame(dialog, padding=10)
+            text_frame.pack(fill="both", expand=True)
+            
+            report_text = scrolledtext.ScrolledText(
+                text_frame,
+                wrap=tk.WORD,
+                width=80,
+                height=20,
+                font=("Courier", 9)
+            )
+            report_text.pack(fill="both", expand=True)
+            report_text.insert("1.0", report)
+            report_text.config(state="disabled")
+            
+            # 按钮栏
+            button_frame = ttk.Frame(dialog, padding=10)
+            button_frame.pack(fill="x")
+            
+            if not result.is_healthy or result.warnings:
+                # 如果有问题，显示快速修复按钮
+                def on_quick_fix():
+                    if messagebox.askyesno(
+                        "确认",
+                        "快速修复将执行以下操作：\n\n"
+                        "1. 启用外键约束\n"
+                        "2. 优化数据库（VACUUM）\n"
+                        "3. 重建索引\n"
+                        "4. 提交待处理的事务\n\n"
+                        "建议在执行前先备份数据库。\n\n"
+                        "是否继续？"
+                    ):
+                        dialog.destroy()
+                        self.status("正在执行快速修复...")
+                        
+                        # 先备份
+                        if messagebox.askyesno("备份", "是否先备份数据库？（强烈建议）"):
+                            self.backup_database()
+                        
+                        # 执行修复
+                        actions = quick_fix_database(self.db_path)
+                        
+                        # 显示结果
+                        result_msg = "快速修复已完成:\n\n" + "\n".join(f"✓ {action}" for action in actions)
+                        messagebox.showinfo("修复完成", result_msg)
+                        
+                        # 重新检查
+                        if messagebox.askyesno("重新检查", "是否重新检查数据库健康状态？"):
+                            self.check_database_health()
+                        
+                        self.status("数据库修复完成")
+                
+                ttk.Button(
+                    button_frame,
+                    text="快速修复",
+                    command=on_quick_fix,
+                    width=15
+                ).pack(side="left", padx=5)
+            
+            # 导出报告按钮
+            def on_export():
+                export_path = filedialog.asksaveasfilename(
+                    defaultextension=".txt",
+                    filetypes=[("文本文件", "*.txt")],
+                    initialfile=f"db_health_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                )
+                if export_path:
+                    with open(export_path, 'w', encoding='utf-8') as f:
+                        f.write(report)
+                    messagebox.showinfo("成功", f"报告已导出到:\n{export_path}")
+            
+            ttk.Button(
+                button_frame,
+                text="导出报告",
+                command=on_export,
+                width=15
+            ).pack(side="left", padx=5)
+            
+            ttk.Button(
+                button_frame,
+                text="关闭",
+                command=dialog.destroy,
+                width=15
+            ).pack(side="right", padx=5)
+            
+            self.status("数据库健康检查完成")
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"健康检查失败：\n\n{str(e)}")
+            self.status("健康检查失败")
+    
+    def backup_database(self):
+        """备份当前数据库文件"""
+        # 生成默认备份文件名（使用当前日期）
+        current_date = datetime.now().strftime("%Y%m%d")
+        default_filename = f"thoracic_backup_{current_date}.db"
+        
+        # 让用户选择保存位置
+        backup_path = filedialog.asksaveasfilename(
+            title="备份数据库到...",
+            defaultextension=".db",
+            filetypes=[("SQLite数据库", "*.db"), ("所有文件", "*.*")],
+            initialfile=default_filename
+        )
+        
+        if not backup_path:
+            return
+        
+        try:
+            # 获取源数据库文件大小
+            source_size = self.db_path.stat().st_size / 1024 / 1024  # MB
+            
+            # 复制数据库文件
+            self.status(f"正在备份数据库...")
+            shutil.copy2(self.db_path, backup_path)
+            
+            # 验证备份文件
+            backup_size = Path(backup_path).stat().st_size / 1024 / 1024  # MB
+            
+            if backup_size == source_size:
+                messagebox.showinfo(
+                    "备份成功",
+                    f"数据库已成功备份到：\n\n{backup_path}\n\n"
+                    f"文件大小：{backup_size:.2f} MB\n"
+                    f"备份时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                self.status(f"数据库备份成功：{Path(backup_path).name}")
+            else:
+                messagebox.showwarning(
+                    "备份完成但有警告",
+                    f"备份已完成，但文件大小不一致：\n\n"
+                    f"源文件：{source_size:.2f} MB\n"
+                    f"备份文件：{backup_size:.2f} MB\n\n"
+                    f"请验证备份文件的完整性"
+                )
+        
+        except PermissionError:
+            messagebox.showerror(
+                "权限错误",
+                f"无法写入到目标位置：\n\n{backup_path}\n\n"
+                "请检查文件夹权限或选择其他位置"
+            )
+            self.status("备份失败：权限不足")
+        
+        except Exception as e:
+            messagebox.showerror(
+                "备份失败",
+                f"备份数据库时出错：\n\n{str(e)}"
+            )
+            self.status(f"备份失败：{str(e)}")
+    
     def show_about(self):
         """显示关于对话框"""
 
-        # 更新关于信息至 v3.5.4
+        # 更新关于信息至 v3.7.0
         about_text = (
             "胸外科科研数据录入系统\n\n"
-            "版本：v3.5.4\n\n"
+            "版本：v3.7.0\n\n"
             "功能特点：\n"
             "• 全流程患者数据管理（肺癌/食管癌）\n"
             "• 手术、病理、分子检测、随访等标签页均支持标准的新增/修改/删除，\n"
             "  列表统一为\"住院号 + 日期\"结构，移除历史的编号列\n"
             "• 全局状态管理：选择患者后，全局 current_patient_id 和 current_hospital_id 更新，\n"
             "  各标签页同步，不再各自维护独立状态\n"
+            "• 多线程导出（v3.6.0 新增）：\n"
+            "  - 并行数据获取，导出速度提升 2-4 倍\n"
+            "  - 实时进度显示，后台处理不卡顿\n"
+            "  - 支持 Excel 和 CSV 格式\n"
+            "• 数据库管理（v3.6.2 新增）：\n"
+            "  - 一键备份功能，自动日期命名\n"
+            "  - 健康检查工具，自动诊断问题\n"
+            "  - 导入预检查，查看重复和预估数据量\n"
+            "• 稳定性改进（v3.7.0 新增）：\n"
+            "  - 修复10个潜在bug，提升稳定性\n"
+            "  - 改进异常处理，更好的错误提示\n"
+            "  - 类型转换安全保护，防止崩溃\n"
             "• 数据导出（Excel/CSV），支持一键导出当前患者或整个数据库\n"
             "• 数据库导入：按住院号合并新患者，避免编号冲突，多库导入时统计导入结果\n"
             "• 查询与统计功能：快速查找患者、AJCC TNM 分期参考以及键盘快捷键支持\n\n"
