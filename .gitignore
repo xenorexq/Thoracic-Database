@@ -1,0 +1,89 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec.bak
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project specific
+thoracic.db
+*.db
+*.db-journal
+*.log
+importer.log
+app.log
+
+# Backup files
+*_backup_*.db
+backup/
+
+# Temporary files
+*.tmp
+*.temp
+~$*.xlsx
+~$*.docx
+
+# Build artifacts
+build/
+dist/
+*.exe
+*.app
+*.dmg
+
+# Exported data (optional, uncomment if needed)
+# exported_pages/
+# *.xlsx
+# *.csv
+
+# Test files (keep test scripts out of releases)
+test_*.py
+

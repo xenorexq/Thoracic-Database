@@ -386,6 +386,22 @@ class PathologyTab(ttk.Frame):
                 new_id = self.db.insert_pathology(self.app.current_patient_id, data)
                 messagebox.showinfo("成功", f"病理记录已添加 (ID={new_id})")
             else:
+                # 编辑现有记录时，保留孤儿字段 report_date 的原值
+                # 避免编辑后导致旧数据丢失
+                try:
+                    old_row = self.db.conn.execute(
+                        "SELECT report_date FROM Pathology WHERE path_id=?",
+                        (self.current_record_id,)
+                    ).fetchone()
+                    if old_row:
+                        old_dict = dict(old_row)
+                        # 保留原有的 report_date（如果存在）
+                        if old_dict.get("report_date") is not None:
+                            data["report_date"] = old_dict["report_date"]
+                except Exception as e:
+                    # 如果获取旧值失败，继续保存（不影响主流程）
+                    print(f"Warning: Failed to preserve report_date: {e}")
+                
                 self.db.update_pathology(self.current_record_id, data)
                 messagebox.showinfo("成功", "病理记录已更新")
             # 保存完成后刷新列表

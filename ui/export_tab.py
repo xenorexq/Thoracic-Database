@@ -105,6 +105,7 @@ class ExportTab(ttk.Frame):
             return
         
         def run_export():
+            self.app.is_exporting = True  # 设置导出标志
             try:
                 self.app.root.after(0, lambda: self.show_progress("导出患者 Excel"))
                 
@@ -124,6 +125,8 @@ class ExportTab(ttk.Frame):
             except Exception as e:
                 self.app.root.after(0, lambda: self.close_progress())
                 self.app.root.after(0, lambda err=str(e): messagebox.showerror("导出错误", f"导出失败：\n{err}"))
+            finally:
+                self.app.is_exporting = False  # 清除导出标志
         
         threading.Thread(target=run_export, daemon=True).start()
 
@@ -137,6 +140,7 @@ class ExportTab(ttk.Frame):
             return
         
         def run_export():
+            self.app.is_exporting = True  # 设置导出标志
             try:
                 self.app.root.after(0, lambda: self.show_progress("导出患者 CSV"))
                 
@@ -156,6 +160,8 @@ class ExportTab(ttk.Frame):
             except Exception as e:
                 self.app.root.after(0, lambda: self.close_progress())
                 self.app.root.after(0, lambda err=str(e): messagebox.showerror("导出错误", f"导出失败：\n{err}"))
+            finally:
+                self.app.is_exporting = False  # 清除导出标志
         
         threading.Thread(target=run_export, daemon=True).start()
 
@@ -170,6 +176,7 @@ class ExportTab(ttk.Frame):
             return
         
         def run_export():
+            self.app.is_exporting = True  # 设置导出标志
             try:
                 self.app.root.after(0, lambda: self.show_progress("导出全库 Excel"))
                 
@@ -188,6 +195,8 @@ class ExportTab(ttk.Frame):
             except Exception as e:
                 self.app.root.after(0, lambda: self.close_progress())
                 self.app.root.after(0, lambda err=str(e): messagebox.showerror("导出错误", f"导出失败：\n{err}"))
+            finally:
+                self.app.is_exporting = False  # 清除导出标志
         
         threading.Thread(target=run_export, daemon=True).start()
 
@@ -198,6 +207,7 @@ class ExportTab(ttk.Frame):
             return
         
         def run_export():
+            self.app.is_exporting = True  # 设置导出标志
             try:
                 self.app.root.after(0, lambda: self.show_progress("导出全库 CSV"))
                 
@@ -216,5 +226,7 @@ class ExportTab(ttk.Frame):
             except Exception as e:
                 self.app.root.after(0, lambda: self.close_progress())
                 self.app.root.after(0, lambda err=str(e): messagebox.showerror("导出错误", f"导出失败：\n{err}"))
+            finally:
+                self.app.is_exporting = False  # 清除导出标志
         
         threading.Thread(target=run_export, daemon=True).start()

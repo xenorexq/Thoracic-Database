@@ -22,7 +22,25 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Iterable
 
 
-DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "thoracic.db"
+import sys
+
+# v3.7.1 Fix: Ensure database path works correctly in frozen (EXE) mode
+# When running as EXE, sys.frozen is True.
+# If we are in a one-file EXE, sys._MEIPASS is the temp dir (read-only usually).
+# We want the DB to be next to the executable (or in user data, but here we choose exe dir for portability).
+def get_db_path() -> Path:
+    if getattr(sys, 'frozen', False):
+        # Running as compiled exe
+        # Use the directory where the executable is located
+        base_path = Path(sys.executable).parent
+    else:
+        # Running from source
+        # Use the project root directory (2 levels up from db/models.py)
+        base_path = Path(__file__).resolve().parents[1]
+    
+    return base_path / "thoracic.db"
+
+DEFAULT_DB_PATH = get_db_path()
 
 
 

@@ -53,9 +53,10 @@ def fetch_table_data(db: Database, table: str, patient_id: Optional[int] = None)
     import sqlite3
     
     # 为线程安全，每个线程使用独立的连接
+    # 不需要check_same_thread=False，因为每个线程都创建自己的连接
     conn = None
     try:
-        conn = sqlite3.connect(db.db_path, check_same_thread=False)
+        conn = sqlite3.connect(db.db_path)
         conn.row_factory = sqlite3.Row
         
         if patient_id:

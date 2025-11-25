@@ -248,7 +248,8 @@ def export_patient_to_excel(
         if not patient_rows:
             raise ValueError(f"Patient with ID {patient_id} not found")
         
-        hospital_id = patient_rows[0].get("hospital_id")
+        # 如果hospital_id为空，使用patient_id作为备用标识
+        hospital_id = patient_rows[0].get("hospital_id") or f"PID_{patient_id}"
         
         # 处理并写入每个表
         write_progress_step = 30.0 / len(tables) if len(tables) > 0 else 0

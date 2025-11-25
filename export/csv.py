@@ -384,7 +384,8 @@ def export_patient_to_csv(
         if not patient_rows:
             raise ValueError(f"Patient with ID {patient_id} not found")
         
-        hospital_id = patient_rows[0].get("hospital_id")
+        # 如果hospital_id为空，使用patient_id作为备用标识
+        hospital_id = patient_rows[0].get("hospital_id") or f"PID_{patient_id}"
         
         # 准备写入任务
         file_tasks = []

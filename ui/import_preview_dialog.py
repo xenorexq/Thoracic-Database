@@ -22,9 +22,10 @@ class ImportPreviewDialog:
         
         # 创建对话框窗口
         self.dialog = tk.Toplevel(parent)
-        self.dialog.title("导入预检查结果")
-        self.dialog.geometry("700x600")
+        self.dialog.title("数据库导入 - 确认导入")
+        self.dialog.geometry("750x750")  # 增加尺寸确保按钮可见
         self.dialog.resizable(True, True)
+        self.dialog.minsize(700, 700)  # 设置最小尺寸，防止用户缩得太小
         
         # 居中显示
         self.dialog.transient(parent)
@@ -42,26 +43,47 @@ class ImportPreviewDialog:
         main_frame = ttk.Frame(self.dialog, padding=10)
         main_frame.pack(fill="both", expand=True)
         
-        # 标题和图标
+        # 标题和说明
         title_frame = ttk.Frame(main_frame)
         title_frame.pack(fill="x", pady=(0, 10))
         
+        # 主标题
+        main_title = ttk.Label(
+            title_frame,
+            text="📊 数据库导入预检查完成",
+            font=("Arial", 14, "bold"),
+            foreground="#2c3e50"
+        )
+        main_title.pack(anchor="w", pady=(0, 5))
+        
+        # 副标题（检查结果）
         if self.analysis.new_patients > 0:
             icon = "✓"
             title_text = f"检测到 {self.analysis.new_patients} 位新患者可以导入"
             title_color = "green"
+            subtitle_text = "请确认下方信息后，点击底部的'确认导入'按钮开始导入"
         else:
             icon = "⚠"
             title_text = "没有可导入的新患者"
             title_color = "orange"
+            subtitle_text = "所有患者均已存在于当前数据库"
         
-        title_label = ttk.Label(
+        result_label = ttk.Label(
             title_frame,
             text=f"{icon} {title_text}",
-            font=("Arial", 12, "bold"),
+            font=("Arial", 11, "bold"),
             foreground=title_color
         )
-        title_label.pack(anchor="w")
+        result_label.pack(anchor="w", pady=(0, 2))
+        
+        # 操作提示
+        subtitle_label = ttk.Label(
+            title_frame,
+            text=subtitle_text,
+            font=("Arial", 9),
+            foreground="gray"
+        )
+        subtitle_label.pack(anchor="w")
         
         # 摘要信息框
         summary_frame = ttk.LabelFrame(main_frame, text="导入摘要", padding=10)
@@ -132,7 +154,7 @@ class ImportPreviewDialog:
             detail_frame,
             wrap=tk.WORD,
             width=80,
-            height=15,
+            height=12,  # 减小高度，为按钮留出空间
             font=("Courier", 9)
         )
         report_text.pack(fill="both", expand=True)
@@ -155,41 +177,69 @@ class ImportPreviewDialog:
             )
             hint_label.pack(anchor="w")
         
-        # 按钮栏
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill="x")
-        
+        # 按钮栏 - 增加上方边距确保可见
         if self.analysis.new_patients > 0:
-            # 有新数据可导入
-            ttk.Button(
-                button_frame,
-                text=f"确认导入 ({self.analysis.new_patients} 位新患者)",
-                command=self.on_confirm,
-                width=30
-            ).pack(side="left", padx=5)
+            # 有新数据可导入 - 添加明显的说明
+            instruction_frame = ttk.Frame(main_frame)
+            instruction_frame.pack(fill="x", pady=(15, 5))  # 增加上方边距
             
-            ttk.Button(
+            instruction_label = ttk.Label(
+                instruction_frame,
+                text="👉 点击下方按钮开始导入数据：",
+                foreground="blue",
+                font=("Arial", 10, "bold")
+            )
+            instruction_label.pack(anchor="w")
+            
+            button_frame = ttk.Frame(main_frame)
+            button_frame.pack(fill="x", pady=(5, 10))  # 增加按钮区域的垂直边距
+            
+            confirm_btn = ttk.Button(
                 button_frame,
-                text="取消",
+                text=f"✓ 确认导入 ({self.analysis.new_patients} 位新患者)",
+                command=self.on_confirm,
+                bootstyle="success",  # 绿色按钮更醒目
+                width=35
+            )
+            confirm_btn.pack(side="left", padx=5, pady=5)  # 增加按钮内边距
+            
+            cancel_btn = ttk.Button(
+                button_frame,
+                text="✗ 取消",
                 command=self.on_cancel,
                 width=15
-            ).pack(side="left", padx=5)
+            )
+            cancel_btn.pack(side="left", padx=5, pady=5)
         else:
-            # 没有新数据
+            # 没有新数据 - 显示清晰的提示
+            no_data_frame = ttk.Frame(main_frame)
+            no_data_frame.pack(fill="x", pady=(15, 10))  # 增加上方边距
+            
+            no_data_label = ttk.Label(
+                no_data_frame,
+                text="ℹ 所有患者均已存在于当前数据库中，无需导入",
+                foreground="blue",
+                font=("Arial", 10, "bold")
+            )
+            no_data_label.pack(anchor="w")
+            
+            button_frame = ttk.Frame(main_frame)
+            button_frame.pack(fill="x", pady=(5, 10))  # 增加按钮区域的垂直边距
+            
             ttk.Button(
                 button_frame,
                 text="关闭",
                 command=self.on_cancel,
                 width=15
-            ).pack(side="left", padx=5)
+            ).pack(side="left", padx=5, pady=5)  # 增加按钮内边距
         
-        # 导出报告按钮
+        # 导出报告按钮（始终显示在右侧）
         ttk.Button(
             button_frame,
             text="导出报告",
             command=self.on_export_report,
             width=15
-        ).pack(side="right", padx=5)
+        ).pack(side="right", padx=5, pady=5)
     
     def on_confirm(self):
         """用户确认导入"""

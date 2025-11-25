@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
-sys.path.insert(0, str(BASE_DIR))  # 关键:把项目根加入模块搜索路径
+# sys.path.insert(0, str(BASE_DIR))  # 在打包环境中通常不需要手动修改sys.path，PyInstaller会处理
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -17,7 +17,7 @@ import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 
 # 下面全部用"绝对导入"（不带.或..）
-from db.models import Database
+from db.models import Database, DEFAULT_DB_PATH
 from ui.patient_tab import PatientTab
 from ui.surgery_tab import SurgeryTab
 from ui.path_tab import PathologyTab
@@ -42,9 +42,21 @@ class ThoracicApp:
         # 执行数据库迁移
         migrate_database(self.db_path)
 
-        # 加载分期映射表
-        assets_dir = Path(__file__).parent / "assets"
+        # 加载分期映射表 - 适配EXE环境
+        assets_dir = self._get_assets_dir()
         load_mapping_from_csv(self.db, assets_dir)
+    
+    def _get_assets_dir(self) -> Path:
+        """获取assets目录路径，兼容开发环境和EXE环境"""
+        if getattr(sys, 'frozen', False):
+            # 运行在打包后的EXE环境
+            # assets文件被打包到 sys._MEIPASS 临时目录中
+            base_path = Path(sys._MEIPASS)
+        else:
+            # 开发环境
+            base_path = Path(__file__).parent
+        
+        return base_path / "assets"
 
         # 当前患者状态
         # 统一使用 patient_id 和 hospital_id 保存当前选中患者的标识
@@ -52,6 +64,10 @@ class ThoracicApp:
         self.current_patient_id = None
         self.current_hospital_id = None
         self.cancer_type = None
+        
+        # 操作状态标志（防止并发冲突）
+        self.is_importing = False
+        self.is_exporting = False
 
         # 创建主容器（使用PanedWindow实现左右分栏）
         main_paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
@@ -429,6 +445,14 @@ class ThoracicApp:
     
     def import_database(self):
         """导入其他数据库并合并新患者数据 (带预检查和确认对话框)"""
+        # 并发操作检查
+        if self.is_importing:
+            messagebox.showwarning("提示", "数据库导入正在进行中，请等待完成")
+            return
+        if self.is_exporting:
+            messagebox.showwarning("提示", "数据库导出正在进行中，请等待完成后再导入")
+            return
+        
         # 允许多选多个数据库文件
         source_dbs = filedialog.askopenfilenames(
             title="选择要导入的数据库文件",
@@ -469,16 +493,46 @@ class ThoracicApp:
         
         # === 第二阶段：执行导入 ===
 
+        # 设置导入标志
+        self.is_importing = True
+        
+        # 辅助函数：在线程中生成唯一的event_code
+        def generate_unique_event_code_in_thread(conn, patient_id):
+            """在导入线程中生成唯一的随访事件编码"""
+            import random
+            import string
+            alphabet = string.digits
+            max_attempts = 100
+            for _ in range(max_attempts):
+                candidate = ''.join(random.choices(alphabet, k=6))
+                exists = conn.execute(
+                    "SELECT 1 FROM FollowUpEvent WHERE patient_id=? AND event_code=?",
+                    (patient_id, candidate)
+                ).fetchone()
+                if not exists:
+                    return candidate
+            # 如果100次都冲突，使用时间戳+随机数（几乎不可能失败）
+            import time
+            return f"{int(time.time() * 1000) % 1000000}"
+        
         # 准备在后台线程中运行
         def run_import():
             self.root.after(0, lambda: self.show_progress(True))
             self.root.after(0, lambda: self.status("正在准备导入..."))
             
+            # ⚠️ 关键修复：在后台线程中创建新的数据库连接
+            # SQLite连接对象不能跨线程使用，必须在使用它的线程中创建
+            thread_conn = None
             try:
+                # 在当前线程（后台线程）中创建新连接
+                thread_conn = sqlite3.connect(self.db_path)
+                thread_conn.row_factory = sqlite3.Row
+                thread_conn.execute("PRAGMA foreign_keys = ON;")
+                
                 # 构建当前数据库已存在的 hospital_id 集合
                 dest_ids = set(
                     row[0]
-                    for row in self.db.conn.execute("SELECT hospital_id FROM Patient").fetchall()
+                    for row in thread_conn.execute("SELECT hospital_id FROM Patient").fetchall()
                     if row[0]
                 )
 
@@ -518,10 +572,19 @@ class ThoracicApp:
                             hospital_id = row["hospital_id"]
                             if not hospital_id or hospital_id in dest_ids:
                                 continue
+                            
+                            # 使用线程本地连接插入患者数据
                             patient_data = dict(row)
                             patient_data.pop("patient_id", None)
-                            # insert_patient now supports commit=False
-                            new_pid = self.db.insert_patient(patient_data, commit=False)
+                            
+                            # 构建插入SQL
+                            columns = ', '.join(patient_data.keys())
+                            placeholders = ', '.join(['?' for _ in patient_data])
+                            sql = f"INSERT INTO Patient ({columns}) VALUES ({placeholders})"
+                            
+                            cursor = thread_conn.execute(sql, list(patient_data.values()))
+                            new_pid = cursor.lastrowid
+                            
                             dest_ids.add(hospital_id)
                             id_map[row["patient_id"]] = new_pid
                             total_imports["Patient"] += 1
@@ -551,7 +614,14 @@ class ThoracicApp:
                                             surgery_data = dict(srow)
                                             surgery_data.pop("surgery_id", None)
                                             surgery_data.pop("patient_id", None)
-                                            self.db.insert_surgery(dest_pid, surgery_data, commit=False)
+                                            surgery_data['patient_id'] = dest_pid
+                                            
+                                            # 使用线程本地连接插入
+                                            columns = ', '.join(surgery_data.keys())
+                                            placeholders = ', '.join(['?' for _ in surgery_data])
+                                            sql = f"INSERT INTO Surgery ({columns}) VALUES ({placeholders})"
+                                            thread_conn.execute(sql, list(surgery_data.values()))
+                                            
                                             total_imports["Surgery"] += 1
                                         except Exception as surg_err:
                                             print(f"[WARNING] 导入单条Surgery记录失败 (患者{dest_pid}): {surg_err}")
@@ -571,7 +641,14 @@ class ThoracicApp:
                                             path_data = dict(prow)
                                             path_data.pop("path_id", None)
                                             path_data.pop("patient_id", None)
-                                            self.db.insert_pathology(dest_pid, path_data, commit=False)
+                                            path_data['patient_id'] = dest_pid
+                                            
+                                            # 使用线程本地连接插入
+                                            columns = ', '.join(path_data.keys())
+                                            placeholders = ', '.join(['?' for _ in path_data])
+                                            sql = f"INSERT INTO Pathology ({columns}) VALUES ({placeholders})"
+                                            thread_conn.execute(sql, list(path_data.values()))
+                                            
                                             total_imports["Pathology"] += 1
                                         except Exception as path_err:
                                             print(f"[WARNING] 导入单条Pathology记录失败 (患者{dest_pid}): {path_err}")
@@ -591,7 +668,14 @@ class ThoracicApp:
                                             mol_data = dict(mrow)
                                             mol_data.pop("mol_id", None)
                                             mol_data.pop("patient_id", None)
-                                            self.db.insert_molecular(dest_pid, mol_data, commit=False)
+                                            mol_data['patient_id'] = dest_pid
+                                            
+                                            # 使用线程本地连接插入
+                                            columns = ', '.join(mol_data.keys())
+                                            placeholders = ', '.join(['?' for _ in mol_data])
+                                            sql = f"INSERT INTO Molecular ({columns}) VALUES ({placeholders})"
+                                            thread_conn.execute(sql, list(mol_data.values()))
+                                            
                                             total_imports["Molecular"] += 1
                                         except Exception as mol_err:
                                             print(f"[WARNING] 导入单条Molecular记录失败 (患者{dest_pid}): {mol_err}")
@@ -612,8 +696,14 @@ class ThoracicApp:
                                         event_date = ev_dict.get("event_date")
                                         event_type = ev_dict.get("event_type")
                                         event_details = ev_dict.get("event_details", "")
+                                        event_code = ev_dict.get("event_code")
+                                        
                                         if event_date and event_type:
-                                            self.db.insert_followup_event(dest_pid, event_date, event_type, event_details, event_code=None, commit=False)
+                                            # 使用线程本地连接插入
+                                            sql = """INSERT INTO FollowUpEvent 
+                                                     (patient_id, event_date, event_type, event_details, event_code) 
+                                                     VALUES (?, ?, ?, ?, ?)"""
+                                            thread_conn.execute(sql, (dest_pid, event_date, event_type, event_details, event_code))
                                             total_imports["FollowUpEvent"] += 1
                                 except Exception as fue_err:
                                     # 记录详细错误而非静默跳过
@@ -640,7 +730,12 @@ class ThoracicApp:
                                             notes = fu_dict.get("notes_fu") or ""
                                             
                                             if death_date:
-                                                self.db.insert_followup_event(dest_pid, death_date, "死亡", f"旧版数据导入; {notes}", event_code=None, commit=False)
+                                                # 使用线程本地连接插入，生成唯一event_code
+                                                new_code = generate_unique_event_code_in_thread(thread_conn, dest_pid)
+                                                sql = """INSERT INTO FollowUpEvent 
+                                                         (patient_id, event_date, event_type, event_details, event_code) 
+                                                         VALUES (?, ?, ?, ?, ?)"""
+                                                thread_conn.execute(sql, (dest_pid, death_date, "死亡", f"旧版数据导入; {notes}", new_code))
                                                 total_imports["FollowUpEvent"] += 1
                                             if last_visit and last_visit != death_date:
                                                 ev_type = "生存"
@@ -649,7 +744,12 @@ class ThoracicApp:
                                                 elif status and "失访" in status:
                                                     ev_type = "失访"
                                                 detail_text = f"旧版数据导入 (状态:{status}); {notes}"
-                                                self.db.insert_followup_event(dest_pid, last_visit, ev_type, detail_text, event_code=None, commit=False)
+                                                # 使用线程本地连接插入，生成唯一event_code
+                                                new_code = generate_unique_event_code_in_thread(thread_conn, dest_pid)
+                                                sql = """INSERT INTO FollowUpEvent 
+                                                         (patient_id, event_date, event_type, event_details, event_code) 
+                                                         VALUES (?, ?, ?, ?, ?)"""
+                                                thread_conn.execute(sql, (dest_pid, last_visit, ev_type, detail_text, new_code))
                                                 total_imports["FollowUpEvent"] += 1
                                         except Exception as fu_err:
                                             print(f"[WARNING] 导入单条旧版FollowUp记录失败 (患者{dest_pid}): {fu_err}")
@@ -667,11 +767,20 @@ class ThoracicApp:
 
                 # 所有文件处理完毕，执行一次性提交
                 self.root.after(0, lambda: self.status("正在写入磁盘..."))
-                self.db.commit() # CRITICAL: Commit transaction
+                thread_conn.commit()  # 使用线程本地连接提交
                 
                 # UI 反馈
                 def on_complete():
                     self.show_progress(False)
+                    self.is_importing = False  # 清除导入标志
+                    
+                    # 关键修复：刷新主线程的数据库连接缓存
+                    # 导入使用的是独立连接，主连接需要执行查询来更新缓存
+                    try:
+                        self.db.conn.execute("SELECT COUNT(*) FROM Patient").fetchone()
+                    except Exception as e:
+                        print(f"[DEBUG] 刷新主连接失败（可忽略）: {e}")
+                    
                     self.status("数据库导入完成")
                     if any(total_imports.values()):
                         summary_lines = []
@@ -688,7 +797,15 @@ class ThoracicApp:
 
             except Exception as e:
                 self.root.after(0, lambda: self.show_progress(False))
+                self.root.after(0, lambda: setattr(self, 'is_importing', False))  # 清除导入标志
                 self.root.after(0, lambda err=str(e): messagebox.showerror("严重错误", f"导入过程中发生严重错误：\n{err}"))
+            finally:
+                # 确保关闭线程本地连接
+                if thread_conn:
+                    try:
+                        thread_conn.close()
+                    except:
+                        pass
 
         # 启动线程
         threading.Thread(target=run_import, daemon=True).start()
@@ -869,10 +986,10 @@ class ThoracicApp:
     def show_about(self):
         """显示关于对话框"""
 
-        # 更新关于信息至 v3.7.0
+        # 更新关于信息至 v3.7.2
         about_text = (
             "胸外科科研数据录入系统\n\n"
-            "版本：v3.7.0\n\n"
+            "版本：v3.7.2\n\n"
             "功能特点：\n"
             "• 全流程患者数据管理（肺癌/食管癌）\n"
             "• 手术、病理、分子检测、随访等标签页均支持标准的新增/修改/删除，\n"
@@ -887,10 +1004,19 @@ class ThoracicApp:
             "  - 一键备份功能，自动日期命名\n"
             "  - 健康检查工具，自动诊断问题\n"
             "  - 导入预检查，查看重复和预估数据量\n"
-            "• 稳定性改进（v3.7.0 新增）：\n"
+            "• 稳定性改进（v3.7.0）：\n"
             "  - 修复10个潜在bug，提升稳定性\n"
             "  - 改进异常处理，更好的错误提示\n"
             "  - 类型转换安全保护，防止崩溃\n"
+            "• UI/UX 改进（v3.7.1-v3.7.2）：\n"
+            "  - 导入预览对话框界面优化，操作流程更清晰\n"
+            "  - 醒目的绿色确认按钮和明确的操作指引\n"
+            "  - 改进标题和提示信息，用户体验大幅提升\n"
+            "• 质量与稳定性（v3.7.2）：\n"
+            "  - 修复导入旧版数据库bug，完美兼容v3.0\n"
+            "  - EXE环境完整适配，资源加载无忧\n"
+            "  - 数据完整性保护，孤儿字段自动保留\n"
+            "  - 完善并发控制，导入导出安全互斥\n"
             "• 数据导出（Excel/CSV），支持一键导出当前患者或整个数据库\n"
             "• 数据库导入：按住院号合并新患者，避免编号冲突，多库导入时统计导入结果\n"
             "• 查询与统计功能：快速查找患者、AJCC TNM 分期参考以及键盘快捷键支持\n\n"
@@ -906,6 +1032,30 @@ def main():
     # 使用 ttkbootstrap 替换标准 Tk，应用现代化主题
     # themename 可选: cosmo, flatly, journal, litera, lumen, minty, pulse, sandstone, united, yeti (Light themes)
     # 或: cyborg, darkly, solar, superhero (Dark themes)
+    
+    # 全局异常捕获，防止EXE静默崩溃
+    def handle_exception(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        
+        import traceback
+        error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        try:
+            # 尝试记录到日志（如果日志模块可用）
+            from utils.logger import log_error
+            log_error(f"Uncaught exception: {error_msg}")
+        except:
+            print(f"Critical error (logging failed): {error_msg}")
+            
+        # 在GUI中显示错误
+        try:
+            messagebox.showerror("未捕获的异常", f"发生未知错误:\n\n{exc_value}\n\n详情请查看日志文件。")
+        except:
+            pass
+
+    sys.excepthook = handle_exception
+
     root = tb.Window(themename="cosmo")
     app = ThoracicApp(root)
     root.mainloop()
